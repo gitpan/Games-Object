@@ -1,42 +1,57 @@
 package Games::Object;
-require 5.6.0;
 
 use strict;
 use Exporter;
 
-use Carp qw(carp croak);
+use Carp qw(carp croak confess);
 use POSIX;
 use IO::File;
+use IO::String 1.02;
+use Games::Object::Common qw(ANAME_MANAGER FetchParams LoadData SaveData);
 
 use vars qw($VERSION @EXPORT_OK %EXPORT_TAGS @ISA);
 
-$VERSION = "0.05";
+$VERSION = "0.10";
 @ISA = qw(Exporter);
-@EXPORT_OK = qw(TotalObjects CreateFlag ModifyFlag Find Id RegisterEvent Process
-		SetProcessList FetchParams RegisterClass IsClassRegistered
+@EXPORT_OK = qw(ProcessList
 		OBJ_CHANGED OBJ_AUTOALLOCATED OBJ_PLACEHOLDER OBJ_DESTROYED
 		ATTR_STATIC ATTR_DONTSAVE ATTR_AUTOCREATE ATTR_NO_INHERIT
-		EVENT_NULL_CALLBACK
-		$CompareFunction);
+		ATTR_NO_ACCESSOR
+		FLAG_NO_INHERIT
+		ACT_MISSING_OK
+		$CompareFunction $AccessorMethod $ActionMethod);
 %EXPORT_TAGS = (
-    functions		=> [qw(TotalObjects Flag Find Id RegisterEvent Process
-			       SetProcessList FetchParams
-			       RegisterClass IsClassRegistered)],
+    functions		=> [qw(ProcessList)],
     objflags		=> [qw(OBJ_CHANGED OBJ_AUTOALLOCATED
 			       OBJ_PLACEHOLDER OBJ_DESTROYED)],
     attrflags		=> [qw(ATTR_STATIC ATTR_DONTSAVE ATTR_AUTOCREATE
-			       ATTR_NO_INHERIT)],
-    variables		=> [qw($CompareFunction)],
-    all			=> [qw(:functions :objflags :attrflags :variables)],
+			       ATTR_NO_INHERIT ATTR_NO_ACCESSOR)],
+    flagflags		=> [qw(FLAG_NO_INHERIT)],
+    actionflags		=> [qw(ACT_MISSING_OK)],
+    variables		=> [qw($CompareFunction $AccessorMethod $ActionMethod)],
 );
 
-use vars qw($CompareFunction);
+use vars qw($CompareFunction $AccessorMethod $ActionMethod);
+
+# Overload operations to allow simple comparisons to be performed easily.
+#
+# ALL operations can be overridden with no effect to this class. These operators
+# are not used internally.
+use overload 
+    '<=>'	=> '_compare_pri',
+    'cmp'	=> '_compare_ids',
+    'bool'	=> '_do_nothing',
+    '""'	=> 'id';
 
 # Define some attribute flags.
 use constant ATTR_STATIC	=> 0x00000001;
 use constant ATTR_DONTSAVE	=> 0x00000002;
 use constant ATTR_AUTOCREATE	=> 0x00000004;
 use constant ATTR_NO_INHERIT	=> 0x00000008;
+use constant ATTR_NO_ACCESSOR	=> 0x00000010;
+
+# Define some flag flags (i.e. internal flags on user-defined flag structures)
+use constant FLAG_NO_INHERIT	=> 0x00000008;
 
 # Define object flags (internal)
 use constant OBJ_CHANGED        => 0x00000001;
@@ -44,59 +59,23 @@ use constant OBJ_AUTOALLOCATED  => 0x00000002;
 use constant OBJ_PLACEHOLDER    => 0x00000004;
 use constant OBJ_DESTROYED      => 0x00000008;
 
-# Define the null callback string.
-use constant EVENT_NULL_CALLBACK	=> '__NULL_CALLBACK__';
+# Define action flags. Make sure these do not overlap with other flags
+# so they can be used in combination with them.
+use constant ACT_MISSING_OK	=> 0x00001000;
 
-# Define the ID of the global object
-use constant GLOBAL_OBJ_ID	=> 'Games::Object::__GLOBAL__';
+# Define default global options
+$AccessorMethod = 0;
+$ActionMethod = 0;
 
 # Define the comparison function to use for processing order.
 $CompareFunction = '_CompareDefault';
-
-# Define a table that instructs this module how to deal with object references
-# upon save and load. In this manner we can handle blessed objects and even
-# provide for their automatic instantiation in the latter case. One entry is
-# prepopulated, that for Games::Object. This also represents the defaults for
-# other classes that are added.
-my %class_info = (
-    'Games::Object'     => {
-        id      => 'id',
-        find    => 'Find',
-        load    => 'load',
-        save    => 'save',
-    },
-);
-
-# Define table that tracks which classes we have require()d
-my %required = ();
-
-# Define storage for created objects. Note that this means that objects will
-# be persistent. They can go out of scope and still exist, since each is
-# identified by a unique ID.
-my %obj_index = ();
-
-# Define a counter for creating objects when the user wants us to assume that
-# every new object is unique.
-my $obj_next = 0;
-
-# Define a counter that will be used to track the order in which objects
-# are created. This is to support a new feature in v0.05
-my $obj_order = 0;
-
-# And if we are doing this, we want to try and use space efficiently by
-# reclaiming unused IDs. Thus we track the lowest available opening.
-# [ NOT YET IMPLEMENTED ]
-my $obj_reclaim = 1;
-my $obj_avail = 0;
 
 # Track the highest priority object so that we can insure the global object
 # is higher.
 my $highest_pri = 0;
 
-# Define storage for user-defined object flags.
-my %user_flag = ();
-
-# Define a table that shows what order process() is supposed to do things.
+# Define a table that shows what order process() is supposed to do things
+# by default.
 my @process_list = (
     'process_queue',
     'process_pmod',
@@ -114,157 +93,141 @@ my $process_limit = 100;
 
 sub round { int($_[0] + 0.5); }
 
-# Load a class.
+# Check to see if a variable holds a reference to a Games::Object object
 
-sub _LoadClass
+sub _IsObject
 {
-        my $class = shift;
-
-        if (!$required{$class}) {
-            eval("require $class");
-            croak "Unable to load class '$class'" if ($@);
-            $required{$class} = 1;
-        }
-        1;
+	my $obj = shift;
+	ref($obj) && UNIVERSAL::isa($obj, 'Games::Object');
 }
 
-# Return name of particular class method.
+# Create an accessor method
 
-sub _ClassMethod
+sub _CreateAccessorMethod
 {
-        shift if (@_ > 2);
-        my ($class, $type) = @_;
-        $class_info{$class}{$type};
-}
+	my ($name, $type) = @_;
+	no strict 'refs';
 
-# Save an item of data to a file.
+	if ($type eq 'attr') {
 
-sub _SaveData
-{
-	my ($file, $data) = @_;
+	    # Don't do anything if already defined.
+	    my $simple = $name;
+	    my $modify = "mod_$name";
+	    return 1 if (defined(&$simple));
 
-	# Check for undef, as this takes special handling.
-	if (!defined($data)) {
-	    print $file "U\n";
-	    return 1;
+	    # Create it.
+	    *$simple = sub {
+	        my $obj = shift;
+	        @_ == 0 ? $obj->attr($name) :
+	        @_ == 1 ? $obj->mod_attr(-name => $name, -value => $_[0]) :
+		@_ == 2 && _IsObject($_[1]) ?
+		          $obj->mod_attr(-name => $name,
+					 -value => $_[0],
+					 -other => $_[1]) :
+		@_ == 3 && _IsObject($_[1]) && _IsObject($_[2]) ?
+		          $obj->mod_attr(-name => $name,
+					 -value => $_[0],
+					 -other => $_[1],
+					 -object => $_[2])
+		:
+	        	  $obj->mod_attr(-name => $name, '-value', @_);
+	    };
+	    *$modify = sub {
+	        my $obj = shift;
+		@_ == 1 ? $obj->mod_attr(-name => $name, -modify => $_[0]) :
+		@_ == 2 && _IsObject($_[1]) ?
+		          $obj->mod_attr(-name => $name,
+					 -modify => $_[0],
+					 -other => $_[1]) :
+		@_ == 3 && _IsObject($_[1]) && _IsObject($_[2]) ?
+		          $obj->mod_attr(-name => $name,
+					 -modify => $_[0],
+					 -other => $_[1],
+					 -object => $_[2])
+		:
+	        	  $obj->mod_attr(-name => $name, '-modify', @_);
+	    };
+
+	} elsif ($type eq 'flag') {
+
+	    # Don't do anything if already defined.
+	    return 1 if (defined(&$name));
+
+	    # Create it.
+	    *$name = sub {
+		my $obj = shift;
+		my ($val, $other) = @_;
+		$val ? $obj->set($name, $other) :
+		       $obj->clear($name, $other);
+	    };
+
 	}
 
-	# Now handle everything else.
-	my $ref = ref($data);
-	if ($ref eq '' && $data =~ /\n/) {
-	    # Multiline text scalar
-	    my @lines = split(/\n/, $data);
-	    print $file "M " . scalar(@lines) . "\n" .
-			join("\n", @lines) . "\n";
-	} elsif ($ref eq '') {
-	    # Simple scalar.
-	    print $file "S $data\n";
-	} elsif ($ref eq 'ARRAY') {
-	    # Array.
-	    print $file "A " . scalar(@$data) . "\n";
-	    foreach my $item (@$data) {
-		_SaveData($file, $item);
-	    }
-	} elsif ($ref eq 'HASH') {
-	    # Hash. WARNING: Hash keys cannot have newlines in them!
-	    my @keys = keys %$data;
-	    print $file "H " . scalar(@keys)  . "\n";
-	    foreach my $key (@keys) {
-		print $file "$key\n";
-		_SaveData($file, $data->{$key});
-	    }
-	} elsif (defined($class_info{$ref})) {
-	    # This is a registered class, so pass the work along to the
-	    # defined method.
-	    print $file "O $ref\n";
-	    my $method = $class_info{$ref}{save};
-	    $data->$method(file => $file);
-	} elsif ($ref && UNIVERSAL::isa($data, 'Games::Object')) {
-	    # Save the ID of the object.
-	    print $file "G " . $data->id() . "\n";
-	} else {
-	    # SOL
-	    croak("Cannot save reference to $ref object");
-	}
 	1;
 }
 
-# Load data from a file. This can take an optional second parameter. If present,
-# this is taken to be a reference to a variable that will hold the data, rather
-# than creating our own and returning the result (this applies only to
-# non-scalar data). WARNING!! No check is made to insure that the reference
-# type is compatible with what is in the file!
+# Create an action method.
 
-sub _LoadData
+sub _CreateActionMethod
 {
-	my ($file, $store) = @_;
-	my $line = <$file>;
+	my $action = shift;
+	$action =~ /^on_(.+)$/;
+	my $verb = $1;
 
-	# The caller is responsible for calling this routine only when there
-	# is data to read.
-	croak("Unexepected EOF") if (!defined($line));
+	no strict 'refs';
 
-	# Check for something we recognize.
-	chomp $line;
-	my $tag = substr($line, 0, 1);
-	my $val = substr($line, 2) if ($tag ne 'U'); # Avoid substr warning
-	if ($tag eq 'U') {
-	    # Undef.
-	    undef;
-	} elsif ($tag eq 'S') {
-	    # Simple scalar value
-	    $val;
-	} elsif ($tag eq 'M') {
-	    # Multiline text, to be returned as scalar.
-	    my @text = ();
-	    foreach my $i (1 .. $val) {
-		my $line2 = <$file>;
-		croak("Unexepected EOF") if (!defined($line2));
-		push @text, $line2;
-	    }
-	    join("\n", @text);
-	} elsif ($tag eq 'A') {
-	    # Build an array.
-	    my $ary = $store || [];
-	    foreach my $i (1 .. $val) {
-		push @$ary, _LoadData($file);
-	    }
-	    $ary;
-	} elsif ($tag eq 'H') {
-	    # Reconstruct a hash.
-	    my $hsh = $store || {};
-	    foreach my $i (1 .. $val) {
-		my $key = <$file>;
-		chomp $key;
-		$hsh->{$key} = _LoadData($file);
-	    }
-	    $hsh;
-	} elsif ($tag eq 'O') {
-	    # Object reference. We first make sure this is a registered class
-	    # and if so, we pass this along to it.
-	    if (defined($class_info{$val})) {
-		my $method = $class_info{$val}{load};
-		my $obj = $val->$method(file => $file);
-		$obj;
-	    } else {
-		croak "Cannot load object of class '$val' as it has " .
-			"not been registered";
-	    }
-	} elsif ($tag eq 'G') {
-	    # A Games::Object-subclassed object
-	    my $obj = Find($val);
-	    if (!$obj) {
-		# This object may not have been loaded yet. So we create a
-		# placeholder for it.
-		$obj = Games::Object->new(-id => $val);
-		$obj->_set(OBJ_PLACEHOLDER);
-	    }
-	    $obj;
-	} else {
-	    # Anything else is unrecognized.
-	    croak("Unknown tag '$tag' in file, file may be corrupted");
-	}
+	# This form of the action method acts as a "verb". The first object is
+	# considered to be instigating the action and is thus other, self is
+	# is the object being acted upon, and object is an optional other
+	# item involved in the transaction. Examples:
+	#
+	#   $player->use($camera);
+	#	other = $player self = $camera
+	#	Player snaps a picture
+	#
+	#   $player->use($camera, $plant);
+	#	other = $player self = $camera object = $plant
+	#	Player snaps picture of plant
+	#
+	#   $creature->give($player, $apple);
+	#	other = $creature self = $player object = $apple
+	#	Creature gives player the apple
+	*$verb = sub {
+	    my $other = shift;
+	    my $args = ( ref($_[$#_]) eq 'HASH' ? pop @_ : undef );
+	    my ($self, $object) = (
+		@_ == 0 ? croak "Not enough arguments to $verb!" :
+		@_ == 1 ? ($_[0], undef ) :
+		@_ == 2 ? ( @_ ) :
+		    croak "Too many arguments to $verb!" );
+	    $self->action(action => "object:${action}",
+			  other  => $other,
+			  object => $object,
+			  args   => $args);
+	} if (defined($verb) && !defined(&$verb));
 
+	# The passive form is simply the original action triggered from self
+	# rather than other. Designed largely for peripheral actions or
+	# side-effect actions. For example, extending the "give" action above,
+	# you may want to call "on_given" on the $apple object.
+	#
+	# This is also used for actions that have neither other nor object
+	# parameters.
+	*$action = sub {
+	    my $self = shift;
+	    my $args = ( ref($_[$#_]) eq 'HASH' ? pop @_ : undef );
+	    my $flags = ( !_IsObject($_[$#_]) ? pop @_ : 0 );
+	    my ($other, $object) = (
+		@_ == 0 ? ( undef, undef ) :
+		@_ == 1 ? ( $_[0], undef ) :
+		@_ == 2 ? ( @_ ) :
+		    croak "Too many arguments to $verb!" );
+	    $self->action(action => "object:${action}",
+			  other  => $other,
+			  object => $object,
+			  flags	 => $flags,
+			  args   => $args);
+	} if (!defined(&$action));
 }
 
 # Default comparison function when determining the order of processing of
@@ -282,321 +245,12 @@ sub _CompareCreationOrder {
 ####
 ## FUNCTIONS
 
-# Fetch the global object. Create it if it does not yet exist.
-
-sub GlobalObject
-{
-	my $obj = Find(GLOBAL_OBJ_ID);
-
-	$obj = Games::Object->new(-id => GLOBAL_OBJ_ID) if (!defined($obj));
-	$obj->{priority} = $highest_pri + 1;
-	
-	$obj;
-}
-
-# Fetch parameters, checking for required params and validating the values.
-
-sub FetchParams
-{
-	my ($args, $res, $opts, $del) = @_;
-	$del = 0 if (!defined($del));
-
-	# If the first item is the name of this class, shift it off.
-	shift @$args if (@$args && $args->[0] =~ /^Games::Object/);
-
-	# Now go down the opts list and see what parameters are needed.
-	# Return the results in a hash.
-	my %args = @$args;
-	foreach my $spec (@$opts) {
-
-	    # Fetch the values for this spec. Note that not all may be present,
-	    # depending on the type.
-	    my ($type, $name, $dflt, $rstr) = @$spec;
-
-	    # Philosophy conflict: Many CPAN modules like args to be passed
-	    # with '-' prefixing them. I don't. Useless use of an extra
-	    # keystroke. However, I want to be consistent. Thus a compromise:
-	    # I allow args to be passed with or without the '-', but it always
-	    # gets stored internally without the '-'.
-	    my $oname = $name;
-	    $name = '-' . $name if (defined($args{"-${name}"}));
-
-	    # Check the type.
-	    if ($type eq 'req') {
-
-		# Required parameter, so it must be provided.
-	        croak("Missing required argument '$name'")
-		  unless (defined($args{$name}));
-		$res->{$oname} = $args{$name};
-
-	    } elsif ($type eq 'opt') {
-
-		# Optional parameter. If not there and a default is specified,
-		# then set it to that.
-		if (defined($args{$name})) { $res->{$oname} = $args{$name}; }
-		elsif (defined($dflt))	     { $res->{$oname} = $dflt; }
-
-	    }
-
-	    # Delete item from args if requested.
-	    delete $args{$name} if ($del);
-
-	    # Stop here if we wound up with undef anyway or there are no
-	    # restrictions on the parameter.
-	    next if (!defined($res->{$oname}) || !defined($rstr));
-
-	    # Check for additional restrictions.
-	    if (ref($rstr) eq 'ARRAY') {
-
-		# Value must be one of these
-		my $found = 0;
-		foreach my $item (@$rstr) {
-		    $found = ( $item eq $res->{$oname} );
-		    last if $found;
-		}
-		croak("Invalid value '$res->{$oname}' for param '$name'")
-		    unless ($found);
-
-	    } elsif ($rstr =~ /^(.+)ref$/) {
-
-		my $reftype = uc($1);
-		croak("Parameter '$name' must be $reftype ref")
-		    if (ref($res->{$oname}) ne $reftype);
-
-	    } elsif ($rstr eq 'int') {
-
-		# Must be an integer.
-		croak("Param '$name' must be an integer")
-		    if ($res->{$oname} !~ /^[\+\-\d]\d*$/);
-
-	    } elsif ($rstr eq 'number') {
-
-		# Must be a number. Rather than trying to match against a
-		# heinously long regexp, we'll intercept the warning for
-		# a non-numeric when we try to int() it. TMTOWTDI.
-		my $not_number = 0;
-		local $SIG{__WARN__} = sub {
-		    my $msg = shift;
-		    if ($msg =~ /isn't numeric in int/) {
-			$not_number = 1;
-		    } else {
-			warn $msg;
-		    }
-		};
-		my $x = int($res->{$oname});
-		croak("Param '$name' must be a number") if ($not_number);
-
-	    } elsif ($rstr eq 'boolean') {
-
-		# Must be a boolean. We simply convert to a 0 or 1.
-		my $bool = ( $res->{$oname} eq '0' ? 0 :
-			     $res->{$oname} eq ''  ? 0 :
-			     1 );
-		$res->{$oname} = $bool;
-
-	    } elsif ($rstr eq 'string') {
-
-		# Must not be a reference
-		croak("Param '$name' must be a string, not a reference")
-		  if (ref($res->{$oname}));
-
-	    } elsif ($rstr eq 'file') {
-
-		# Must be reference to an IO::File or FileHandle object
-		croak("Param '$name' must be a file (IO::File/" .
-			"FileHandler object or GLOB reference acceptable)")
-		  if (ref($res->{$oname}) !~ /^(IO::File|FileHandle|GLOB)$/);
-
-	    } elsif ($rstr eq 'readable_filename' ) {
-
-		# Must be the name of a file that exists and is readable.
-		croak("Filename '$res->{$oname}' does not exist")
-		    if (! -f $res->{$oname});
-		croak("Filename '$res->{$oname}' is not readable")
-		    if (! -r $res->{$oname});
-
-	    } elsif ($rstr eq 'object') {
-
-		# Must be an object reference, and must be one that is known
-		# to the class_info table.
-		my $ref = ref($res->{$oname});
-		croak("Param '$name' must be an object reference, not a " .
-			"simple scalar") if (!$ref);
-		croak("Param '$name' must be an object reference, not a " .
-			"'$ref' reference")
-		  if ($ref !~ /^(SCALAR|ARRAY|HASH|CODE|REF|GLOB|LVALUE)$/);
-		croak("Param '$name' must be of a class known to this " .
-			"module (did you forget to RegisterClass() class " .
-			"'$ref'?)")
-		  if (!defined($class_info{$ref}));
-
-	    }
-	}
-
-	# Set args to trimmed amount if delete option requested.
-	@$args = %args if ($del);
-
-	$res;
-}
-
-# Return the number of objects in the universe.
-
-sub TotalObjects { scalar keys %obj_index; }
-
-# Register a class that this module is to know about for load/save
-
-sub RegisterClass
-{
-	shift if (@_ && $_[0] eq __PACKAGE__);
-	my %args = ();
-	my $dflt = $class_info{'Games::Object'};
-
-	# Fetch the parameters, using the Games::Object settings as the
-	# default.
-	FetchParams(\@_, \%args, [
-	    [ 'req', 'class', undef, 'string' ],
-	    [ 'opt', 'id', $dflt->{id}, 'string' ],
-	    [ 'opt', 'find', $dflt->{find}, 'string' ],
-	    [ 'opt', 'load', $dflt->{load}, 'string' ],
-	    [ 'opt', 'save', $dflt->{save}, 'string' ],
-	] );
-
-	# Validate the specified method names. Unfortunately, this requires
-	# us to call in this class as if we were going to use it.
-	my $class = {};
-	_LoadClass($args{class});
-	foreach my $type (qw(id find load save)) {
-	    croak "Class $args{class} does not have a method called " .
-		    "'$args{$type}' or its superclasses"
-		if (!UNIVERSAL::can($args{class}, $args{$type}));
-	    $class->{$type} = $args{$type};
-	}
-	$class_info{$args{class}} = $class;
-	1;
-}
-
-# Check that a class is valid (i.e. has been registered with RegisterClass())
-# Note that either the class name or a reference to an object blessed into
-# that class can be specified.
-
-sub IsClassRegistered
-{
-	my $proto = shift;
-	my $class = ref($proto) || $proto;
-
-	defined($class_info{$class});
-}
-
-# Define a new user-defined flag.
-
-sub CreateFlag
-{
-	my $flag = {};
-	FetchParams(\@_, $flag, [
-	    [ 'req', 'name' ],
-	    [ 'opt', 'autoset', 0 ],
-	]);
-	my $name = delete $flag->{name};
-	croak("Duplicate flag '$name'") if (defined($user_flag{$name}));
-	$user_flag{$name} = $flag;
-	1;
-}
-
-# Modify the options for a flag
-
-sub ModifyFlag
-{
-	my %args = ();
-	FetchParams(\@_, \%args, [
-	    [ 'req', 'name', undef, 'string' ],
-	    [ 'req', 'option', undef, [ 'autoset' ]],
-	    [ 'req', 'value', undef, 'boolean' ],
-	]);
-	croak "Attempt to modify undefined flag '$args{name}'"
-	  if (!defined($user_flag{$args{name}}));
-
-	$user_flag{$args{name}}{$args{option}} = $args{value};
-}
-
-# "Find" an object (i.e. look up its ID). If given something that is
-# already a valid object, validates that the object is still valid. If the
-# assertion flag is passed, an invalid object will result in a fatal error.
-
-sub Find
-{
-	shift if ($_[0] eq __PACKAGE__);
-	my ($id, $assert) = @_;
-
-	$id = $id->{id} if (ref($id) && UNIVERSAL::isa($id, __PACKAGE__));
-	if (defined($obj_index{$id})) {
-	    $obj_index{$id};
-	} elsif ($assert) {
-	    my ($pkg, $file, $line) = caller();
-	    croak "Assertion failed: '$id' is not a valid object ID\n" .
-		  "Called from $pkg ($file) line $line";
-	} else {
-	    undef;
-	}
-}
-
-# Function version of id(). If given a reference, it will check that it is
-# really a Games::Object (or derivative); if given something already an
-# ID, it validates that the Id exists. Like Find(), this takes an assertion
-# flag as well.
-
-sub Id
-{
-	my ($obj, $assert) = @_;
-
-	if (ref($obj) && UNIVERSAL::isa($obj, __PACKAGE__)) {
-	    $obj->id();
-	} elsif (defined($obj_index{$obj})) {
-	    $obj;
-	} elsif ($assert) {
-	    my ($pkg, $file, $line) = caller();
-	    croak "Assertion failed: '$obj' is not a valid object\n" .
-		  "Called from $pkg ($file) line $line";
-	} else {
-	    undef;
-	}
-}
-
-# Go down the complete list of objects and perform a method call on each. If
-# no args are given, 'process' is assumed. This will call them in order of
-# priority. Objects at the same priority do not guarantee any particular order
-# of processing.
-
-sub Process
-{
-	# Note that we grab the actual objects and not the ids in the sort.
-	# This is more efficient, as each object is simply a reference (a
-	# scalar with a fixed size) as opposed to a string (a scalar with
-	# a variable size).
-	my ($method, @args) = @_;
-	$method = 'process' if (!defined($method));
-
-	# Note also that we make a special exception in the case of method
-	# 'destroy'. In such a case, the global object gets shuffled to the
-	# end of the list. Otherwise, we would destroy it first, and the
-	# very next object would magically reinstantiate it when it attempted
-	# to spawn an objectDestoyed event.
-	my @objs = sort $CompareFunction values %obj_index;
-	if ($method eq 'destroy' && $objs[0]->id() eq GLOBAL_OBJ_ID) {
-	    my $top = shift @objs;
-	    push @objs, $top;
-	}
-	foreach my $obj (@objs) {
-	    $obj->$method(@args);
-	}
-	scalar(@objs);
-}
-
-# Set the process list for the process() function. Note that the user is
+# Fetch/set the process list for the process() function. Note that the user is
 # not limited to the methods found here. The methods can be in the subclass
 # if desired. Note that we have no way to validate the method names here,
 # so we take it on good faith that they exist.
 
-sub SetProcessList { @process_list = @_; }
+sub ProcessList { if (@_) { @process_list = @_ } else { @process_list } }
 
 ####
 ## INTERNAL METHODS
@@ -657,7 +311,7 @@ sub _wipe
 	$obj;
 }
 
-# "Lock" a method call so that it cannot be called again, thus preventing
+# "Lock" a method call so that it cannot be called again, thus practioning
 # recursion. If it is already locked, then this is a fatal error, indicating
 # that recursion has occurred.
 
@@ -683,6 +337,28 @@ sub _unlock_method
 	delete $obj->{$lock};
 }
 
+# Compare the IDs of two objects.
+
+sub _compare_ids
+{
+	my ($obj1, $obj2, $swapped) = @_;
+	my $id1 = $obj1->id();
+	my $id2 = ref($obj2) ? $obj2->id() : $obj2;
+
+	$swapped ? $id2 cmp $id1 : $id1 cmp $id2;
+}
+
+# Compare the priorities of two objects.
+
+sub _compare_pri
+{
+	my ($obj1, $obj2, $swapped) = @_;
+	my $pri1 = $obj1->priority();
+	my $pri2 = ref($obj2) ? $obj2->priority() : $obj2;
+
+	$swapped ? $pri2 <=> $pri1 : $pri1 <=> $pri2;
+}
+
 ####
 ## CONSTRUCTOR
 
@@ -693,124 +369,96 @@ sub new
 	my $proto = shift;
 	my $class = ref($proto) || $proto;
 	my $obj = {};
-	my $from_file = 0;
 	my %args = ();
 
 	# Fetch optional parameters.
 	FetchParams(\@_, \%args, [
 	    [ 'opt', 'id', undef, 'string' ],
-	    [ 'opt', 'filename', undef, 'string' ],
-	    [ 'opt', 'file', undef, 'file' ],
+	    [ 'opt', '^on_', undef, 'callback' ],
+	    [ 'opt', '^try_', undef, 'callback' ],
+	    [ 'opt', 'class', undef, 'object' ],
+	    [ 'opt', 'priority', 0, 'int' ],
 	] );
-	croak "Cannot define both 'filename' and 'file' args to object " .
-	      "constructor"
-	    if (defined($args{file}) && defined($args{filename}));
 
-	if (defined($args{filename})) {
+	# Bless object and set user-provided values, if defined.
+	bless $obj, $class;
+	$obj->{id} = $args{id} if (defined($args{id}));
+	$obj->{priority} = $args{priority};
 
-	    # Open this file and then proceed as if normal load.
-	    $args{file} = IO::File->new();
-	    $args{file}->open("<$args{filename}") or
-		croak "Unable to open template file '$args{filename}'";
+	# Initialize internal data structures.
+	$obj->{_flags} = 0;
+	$obj->{attr} = {};
+	$obj->{flag} = {};
+	$obj->{queue} = [];
+	$obj->{priority} = 0;
+	$obj->{pmod} = {};
+	$obj->{pmod_next} = 0;
+	$obj->{pmod_active} = 0;
 
+	# For each on_* action, create a matching attribute to store the
+	# actual callback data and delete the original parameter. This way
+	# we can use simple inheritance and don't have to write seperate code
+	# to handle it.
+	foreach my $action (grep { /^(on|try)_/ } keys %args) {
+	    my $callbk = delete $args{$action};
+	    $obj->del_attr($action);
+	    $obj->new_attr(
+		-name		=> "_ACT_${action}",
+		-type		=> "any",
+		-value		=> $callbk,
+		-flags		=> ATTR_NO_ACCESSOR,
+	    );
+	    _CreateActionMethod($action) if ($ActionMethod);
 	}
-
-	if (defined($args{file})) {
-
-	    # Read the object information from the file. Note we just pass
-	    # this on to the load() routine with a flag set indicating that
-	    # the object must not exist already.
-	    $obj = $class->load(%args, exists => 0);
-	    $from_file = 1;
-
-	} elsif (defined($args{id})) {
-
-	    # The object is to have this specific ID and must not exist already.
-	    my $id = $args{id};
-	    croak("Attempt to create duplicate object '$id'")
-		if (Find($id));
-	    $obj->{id} = $id;
-	    $obj_index{$id} = $obj;
-	    bless $obj, $class;
-
-	} else {
-
-	    # Initialize the object here and give it an ID that we pick.
-	    $obj_avail++ if ($obj_avail == $obj_next);
-	    $obj->{id} = "$obj_next";
-	    $obj_index{"$obj_next"} = $obj;
-	    $obj_next++;
-	    bless $obj, $class;
-	    $obj->_set(OBJ_AUTOALLOCATED);
-
-	}
-
-	# Set some internal tables if not set already.
-	$obj->{_flags} = 0 if (!defined($obj->{_flags}));
-	$obj->{attr} = {} unless(defined($obj->{attr}));
-	$obj->{flag} = {} unless(defined($obj->{flag}));
-	$obj->{queue} = [] unless(defined($obj->{queue}));
-	$obj->{priority} = 0 unless(defined($obj->{priority}));
-	if (!defined($obj->{pmod})) {
-	    $obj->{pmod} = {};
-	    $obj->{pmod_next} = 0;
-	    $obj->{pmod_active} = 0;
-	}
-
-	# Set the order if not defined as this was added in 0.05.
-	if (defined($args{filename})) {
-	    # From template file. We always assign a new order value.
-	    $obj->{order} = $obj_order++;
-	} elsif (defined($obj->{order})) {
-	    # Object already has order set. Make sure the next order value
-	    # is greater than this. This is so the obj_order value will be
-	    # correct after a full game load.
-	    $obj_order = $obj->{order} + 1
-		if ($obj_order <= $obj->{order});
-	} else {
-	    # Order not yet set.
-	    $obj->{order} = $obj_order++;
-	}
-
-	# If any flags have the autoset option, we need to set these, if
-	# we're not here as the result of a load from file.
-	unless ($from_file) {
-	    while ( my ($fname, $fdata) = each %user_flag ) {
-	        $obj->{flag}{$fname} = 1 if ($fdata->{autoset});
-	    }
-	}
-
-	# If a filename had been defined, then we opened the file and we need
-	# to close it.
-	$args{file}->close() if (defined($args{filename}));
 
 	# Done.
 	$obj;
 }
 
-# Load an object from an open file. This can be used in a variety of
-# circumstances, depending on the value of the 'exists' option. If
-# not provided or undef, then load() will not care whether the object
-# already exists in memory. If it does, it is overwritten; if it does not,
-# it is created. If set to 0, the object MUST NOT exist already, or it is
-# an error. If set to 1, the object MUST exist already, or it is an error.
+# Load an object from an open file. You can call this in one of several ways:
+#
+# - As a class method, which generates a totally new object.
+# - As an object method, which loads the object "in place" (i.e. overriting
+#   the current object, except for the ID, which is preserved if defined)
+#
+# You can also call this with a "file" arg (which is an open file), or
+# "filename" (which is a filename that is opened and closed for you)
 
 sub load
 {
 	my $proto = shift;
 	my $class = ref($proto) || $proto;
 	my %args = ();
-	my $obj;
 
+	# Check for occurrence of single parameter and turn into appropriate
+	# named parameter if found.
+	unshift @_, "file" if (@_ == 1 && ref($_[0]));
+	unshift @_, "filename" if (@_ == 1 && !ref($_[0]));
+
+	# Fetch parameters.
 	FetchParams(\@_, \%args, [
-	    [ 'req', 'file', undef, 'file' ],
+	    [ 'opt', 'file', undef, 'file' ],
+	    [ 'opt', 'filename', undef, 'string' ],
 	    [ 'opt', 'id', undef, 'string' ],
-	    [ 'opt', 'exists', undef, 'boolean' ],
+	    [ 'opt', 'other', undef, 'object' ],
 	]);
+
+	# Check the file args.
+	croak "Cannot define both 'filename' and 'file' args to object " .
+	      "constructor"
+	    if (defined($args{file}) && defined($args{filename}));
+	if (defined($args{filename})) {
+	    $args{file} = IO::File->new();
+	    $args{file}->open("<$args{filename}")
+		or croak "Unable to open filename '$args{filename}' for read";
+	} elsif (!defined($args{file})) {
+	    croak "One of 'file' or 'filename' must be specified to load()"
+	}
 
 	# First check that the file really contains an object definition at
 	# this point. We need to do this anyway since we need the ID stored
-	# there.
+	# there. NOTE: The assignment to $file is necessary, as <$args{file}>
+	# will not parse.
 	my $file = $args{file};
 	my $line = <$file>;
 	croak("Attempt to read object data past EOF") if (!defined($line));
@@ -826,45 +474,27 @@ sub load
 	    if ($line !~ /^CL:(.+)$/);
 	my $subclass = $1;
 
-	# If the user overrides the ID, then we set that here.
-	$id = $args{id} if (defined($args{id}));
-
-	if (!defined($args{exists})) {
-
-	    # Instantiate the object automatically if it does not exist.
-	    $obj = Find($id);
-	    $obj = $class->new($id) if (!$obj);
-
-	} elsif ($args{exists}) {
-
-	    # The object MUST exist.
-	    croak("Object '$id' does not exist on load")
-		if (!defined($obj = Find($id)));
+	# How were we called?
+	my $obj;
+	if (_IsObject($proto)) {
+	    # As an object method, so we do a "load in place". Clear out
+	    # everything except the ID, if defined.
 	    $obj->_wipe();
-
 	} else {
-
-	    # The object MUST NOT exist. While new() would check for this
-	    # anyway, I want an error more specific to where the problem lies.
-	    # Exception: If the placeholder flag is set, then this was created
-	    # to satisfy an OREF datum that had an ID that did not yet exist
-	    # and we reuse it.
-	    my $existing = Find($id);
-	    if ($existing) {
-		if ($existing->_is(OBJ_PLACEHOLDER)) {
-		    $obj = $existing;
-		    $obj->_clear(OBJ_PLACEHOLDER);
-		} else {
-		    croak("Object '$id' already exists on load");
-		}
-	    } else {
-	        $obj = $class->new(id => $id);
-	    }
-
+	    # Create a totally new object from this.
+	    $obj = Games::Object->new();
 	}
 
+	# If the user overrides the ID, or the ID exists in the object already,
+	# then we set that here.
+	if (defined($args{id}))		{ $id = $args{id}; }
+	elsif (defined($obj->{id}))	{ $id = $obj->{id}; }
+
 	# We now have an object ready to load into, so perform the load.
-	$obj->_protect_attrs(\&_LoadData, $file, $obj);
+	$obj->_protect_attrs(\&LoadData, $file, $obj);
+
+	# Close the file if we opened it.
+	$file->close() if (defined($args{filename}));
 
 	# Look for snapshots of attributes that had been created with the
 	# AUTOCREATE option and instantiate these, but ONLY if they do not
@@ -887,21 +517,37 @@ sub load
 	    }
 	}
 
+	# (Re)create accessors if user wants it.
+	if ($AccessorMethod) {
+	    foreach my $aname (keys %{$obj->{attr}}) {
+		_CreateAccessorMethod($aname, 'attr')
+		  unless ($obj->{attr}{$aname}{flags} & ATTR_NO_ACCESSOR);
+	    }
+	}
+	if ($ActionMethod) {
+	    foreach my $aname (grep { /^_ACT_/ } keys %{$obj->{attr}}) {
+		$aname =~ /^_ACT_(.+)$/;
+		my $action = $1;
+		_CreateActionMethod($action);
+	    }
+	}
+
 	# Make sure the ID is what we expect.
 	$obj->{id} = $id;
 
-	# Compatibility check for versions 0.04 and previous: If the
-	# order attribute is not set, set it now. Theoretically, either all
-	# objects in the save file have the order attribute set or all of them
-	# do not.
-	$obj->{order} = $obj_order++ if (!defined($obj->{order}));
-
-	# Done. Rebless into this subclass and invoke any event binding
-	# on the objectLoaded event.
+	# Done. Rebless into this subclass and invoke any action binding
+	# on the object:load action.
 	bless $obj, $subclass if ($subclass ne 'Games::Object');
-	$obj->event('objectLoaded', $id, file => $file);
+	$obj->action(
+	    other	=> $args{other},
+	    action	=> 'object:on_load',
+	    args	=> { file => $file },
+	);
 	$obj;
 }
+
+####
+## OBJECT DATA METHODS
 
 # Save an object to a file at the present position. At the moment, everything
 # is saved in clear ASCII. This makes the file portable across architectures
@@ -913,9 +559,28 @@ sub save
 	my ($obj) = shift;
 	my %args = ();
 
+	# Check for occurrence of single parameter and turn into appropriate
+	# named parameter if found.
+	unshift @_, "file" if (@_ == 1 && ref($_[0]));
+	unshift @_, "filename" if (@_ == 1 && !ref($_[0]));
+
+	# Fetch parameters
 	FetchParams(\@_, \%args, [
-	    [ 'req', 'file', undef, 'file' ]
+	    [ 'opt', 'file', undef, 'file' ],
+	    [ 'opt', 'filename', undef, 'file' ],
+	    [ 'opt', 'other', undef, 'object' ],
 	]);
+
+	# Check the file args.
+	croak "Cannot define both 'filename' and 'file' args to save()"
+	    if (defined($args{file}) && defined($args{filename}));
+	if (defined($args{filename})) {
+	    $args{file} = IO::File->new();
+	    $args{file}->open(">$args{filename}")
+		or croak "Unable to open filename '$args{filename}' for write";
+	} elsif (!defined($args{file})) {
+	    croak "One of 'file' or 'filename' must be specified to save()"
+	}
 	my $file = $args{file};
 
 	# Save the ID
@@ -924,8 +589,9 @@ sub save
 	# Save the object class.
 	print $file "CL:" . ref($obj) . "\n";
 
-	# Now all we need to do is call _SaveData() on ourself. However, if
-	# we use $obj directly, it will simply be saved as an ID. We need to
+	# Now all we need to do is call SaveData() on ourself. However, if
+	# we use $obj directly, SaveData will simply call save() all over
+	# again and we have ourselves an infinite loop, which is bad. We need to
 	# fool it into thinking its a hash. So we assign %$obj to an ordinary
 	# hash and pass the ref to it. This forces the reference to lose its
 	# magic. Even better, no duplicate of the hash is made. %hash internally
@@ -934,79 +600,146 @@ sub save
 	# Note that we do not want to save DONTSAVE attributes, so we run it
 	# through the special wrapper.
 	my %hash = %$obj;
-	$obj->_protect_attrs(\&_SaveData, $file, \%hash);
+	$obj->_protect_attrs(\&SaveData, $file, \%hash);
 
-	# Invoke any event bindings.
-	$obj->event('objectSaved', $obj->{id}, file => $file);
+	# Close the file if we opened it.
+	$file->close() if ($args{filename});
+
+	# Invoke any action bindings.
+	$obj->action(
+	    other	=> $args{other},
+	    action	=> 'object:on_save',
+	    args	=> { file => $file },
+	);
 
 }
 
-# Return the object's parent, or set the parent of this object, so as to allow
-# it to inherit attributes. Note that it will not inherit those attributes that
-# have already been defined on the object being parented.
+# This is an interface to the object's manager's find() method. This is
+# essentially shorthand for "do a find() for an ID in the manager of this
+# other object". Note that we do not treat the lack of a manager as an error,
+# but simply report the same as not finding the object.
 
-sub parent
+sub find
+{
+	my ($obj, $id) = @_;
+	my $man = $obj->manager();
+
+	$man ? $man->find($id) : undef;
+}
+
+# Ditto to the manager's order() method
+
+sub order
 {
 	my $obj = shift;
+	my $man = $obj->manager();
 
-	if (@_) {
-	    # Before attempting to parent, check for a circular parent list.
-	    # For example, if "->" means "child of", and A->B, B->C, and
-	    # you attempt C->A, this is a circular parent list.
-	    my $parent = shift;
-	    my $next_parent = $parent;
-	    while ($next_parent) {
-		croak "Attempt to parent '$obj->{id}' to '$parent->{id}' " .
-		      "would result in circular parent list"
-		  if ($next_parent->{id} eq $obj->{id});
-		$next_parent = $next_parent->parent();
-	    }
-	    $obj->{parent} = $parent;
-	} elsif (defined($obj->{parent})) {
-	    $obj->{parent};
-	} else {
-	    undef;
-	}
+	$man ? $man->order($obj) : undef;
 }
 
 ###
 ## FLAG METHODS
 
-# Set one or more user-defined flags on object.
+# Create a flag on an object.
+
+sub new_flag
+{
+	my $obj = shift;
+	my $flag = {};
+
+	# Fetch parameters
+	FetchParams(\@_, $flag, [
+	    [ 'req', 'name', undef, 'string' ],
+	    [ 'opt', 'value', 0, 'boolean' ],
+	    [ 'opt', 'flags', 0, 'int' ],
+	    [ 'opt', 'on_set', undef, 'callback' ],
+	    [ 'opt', 'on_clear', undef, 'callback' ],
+	] );
+
+	# Set on object and done.
+	my $fname = delete $flag->{name};
+	$obj->{flag}{$fname} = $flag;
+	1;
+}
+
+# Set flag on object.
 
 sub set
 {
-	my ($obj, @fnames) = @_;
+	my ($obj, $fname, $other) = @_;
 
-	foreach my $fname (@fnames) {
-	    croak("Attempt to set undefined user flag " .
-		    "'$fname' on '$obj->{id}'")
-	        unless (defined($user_flag{$fname}));
-	    next if (defined($obj->{flag}{$fname}));
-	    $obj->{flag}{$fname} = 1;
-	    $obj->event('flagModified', $fname,
-		old	=> 0,
-		new	=> 1,
+	# Check for multiple flags.
+	if (ref($fname) eq 'ARRAY') {
+	    # Call myself multiple times.
+	    foreach (@$fname) { $obj->set($_, $other); }
+	    return $obj;
+	}
+
+	# Find the flag.
+	my ($flag, $inherited) = $obj->_find_flag($fname);
+	croak("Attempt to set undefined user flag '$fname' on '$obj->{id}'")
+	    unless (defined($flag));
+
+	# If we inherited this flag, then clone it so that we have
+	# our own copy. We do this via a clever trick: Using IO::String
+	# to create a stringified version of the data.
+	if ($inherited) {
+	    $obj->{flag}{$fname} = {};
+	    my $iostr = IO::String->new();
+	    SaveData($iostr, $flag);
+	    seek $iostr, 0, 0;
+	    LoadData($iostr, $obj->{flag}{$fname});
+	    $flag = $obj->{flag}{$fname};
+	}
+
+	# Do it.
+	if ($flag->{value} != 1) {
+	    $flag->{value} = 1;
+	    $obj->action(
+		other	=> $other,
+		action	=> "flag:${fname}:on_set",
+		args	=> { name => $fname },
 	    );
 	}
 	$obj;
 }
 
-# Clear one or more flags.
+# Clear flag on object.
 
 sub clear
 {
-	my ($obj, @fnames) = @_;
+	my ($obj, $fname, $other) = @_;
 
-	foreach my $fname (@fnames) {
-	    croak("Attempt to clear undefined user flag " .
-		    "'$fname' on '$obj->{id}'")
-	        unless (defined($user_flag{$fname}));
-	    next if (!defined($obj->{flag}{$fname}));
-	    delete $obj->{flag}{$fname};
-	    $obj->event('flagModified', $fname,
-		old	=> 1,
-		new	=> 0,
+	if (ref($fname) eq 'ARRAY') {
+	    # Call myself multiple times.
+	    foreach (@$fname) { $obj->clear($_, $other); }
+	    return $obj;
+	}
+
+	# Find flag.
+	my ($flag, $inherited) = $obj->_find_flag($fname);
+	croak("Attempt to clear undefined user flag '$fname' on '$obj->{id}'")
+	    unless (defined($flag));
+
+	# If we inherited this flag, then clone it so that we have
+	# our own copy. We do this via a clever trick: Using IO::String
+	# to create a stringified version of the data.
+	if ($inherited) {
+	    $obj->{flag}{$fname} = {};
+	    my $iostr = IO::String->new();
+	    SaveData($iostr, $flag);
+	    seek $iostr, 0, 0;
+	    LoadData($iostr, $obj->{flag}{$fname});
+	    $flag = $obj->{flag}{$fname};
+	}
+
+	# Do it.
+	if ($flag->{value} != 0) {
+	    $flag->{value} = 0;
+	    $obj->action(
+		other	=> $other,
+		action	=> "flag:${fname}:on_clear",
+		args	=> { name => $fname },
 	    );
 	}
 	$obj;
@@ -1021,10 +754,10 @@ sub is
 	my $total = 0;
 
 	foreach my $fname (@fnames) {
-	    croak("Attempt to clear undefined user flag " .
-		    "'$fname' on '$obj->{id}'")
-	        unless (defined($user_flag{$fname}));
-	    $total++ if (defined($obj->{flag}{$fname}));
+	    my $flag = $obj->_find_flag($fname);
+	    croak("User flag '$fname' on '$obj->{id}' is undefined in is()")
+	        unless (defined($flag));
+	    $total++ if ($flag->{value});
 	}
 	$total == scalar(@fnames);
 }
@@ -1037,10 +770,10 @@ sub maybe
 	my $total = 0;
 
 	foreach my $fname (@fnames) {
-	    croak("Attempt to clear undefined user flag " .
-		    "'$fname' on '$obj->{id}'")
-	        unless (defined($user_flag{$fname}));
-	    $total++ if (defined($obj->{flag}{$fname}));
+	    my $flag = $obj->_find_flag($fname);
+	    croak("User flag '$fname' on '$obj->{id}' is undefined in maybe()")
+	        unless (defined($flag));
+	    $total++ if ($flag->{value});
 	    last if $total;
 	}
 	$total;
@@ -1080,75 +813,69 @@ sub _set_attr
 	    next if (!defined($args{$key}));
 	    my $old = $attr->{$key};
 	    my $new = $args{$key};
-	    my $epart = ( $key eq 'value' ? 'Value' : 'RealValue' );
 
-	    # If this is a non-numeric data type, then set it, queue event
+	    # If this is a non-numeric data type, then set it, call action
 	    # if needed, and done.
 	    if ($attr->{type} !~ /^(int|number)$/) {
 		croak "Non-numeric attributes cannot have split values"
 		    if ($key eq 'real_value');
 		if ($attr->{type} eq 'object') {
-		    # Some special handling is required. First we need to
-		    # see if a conversion needs to be done.
-		    if ($attr->{store} eq 'id' && ref($new)) {
-			# Convert from object reference to ID string
-			croak "Only objects of  class '$attr->{class}' " .
-				"allowed in attribute"
-			    if (ref($new) ne $attr->{class});
-			my $method = _ClassMethod($attr->{class}, 'id');
-			$new = $new->$method();
-		    } elsif ($attr->{store} eq 'ref' && !ref($new)) {
-			# Convert from ID string to object reference. 
-			my $method = _ClassMethod($attr->{class}, 'find');
-			my $class = $attr->{class};
-			$new = $class->$method($new);
-		    } elsif (ref($new)) {
-			# Insure that it is of the proper class.
-			my $class = ref($new);
-			croak "Value must be of class '$attr->{class}' " .
-				"(not '$class')"
-			  if ($class ne $attr->{class});
-		    }
+		    # This must be an object reference, but NOT a
+		    # Games::Object-derived object.
+		    croak "Value to store in 'object' attribute must be " .
+			  "a real object reference, not a simple scalar"
+			if (!ref($new));
+		    croak "Value to store in 'object' attribute must be " .
+			  "a real object reference not a " . ref($new) .
+			  "reference"
+			if (ref($new) =~ /SCALAR|ARRAY|HASH|CODE|LVALUE|GLOB/);
+		    croak "Cannot store a Games::Object-derived object in ".
+			  "an 'object' attribute (use object relationships " .
+			  "in the manager for that)" if (_IsObject($new));
 		}
 		$attr->{$key} = $new;
-		$obj->event("attr${epart}Modified", $aname,
-		    old		=> $old,
-		    new		=> $new,
-		) if (!$args{no_event} && $old ne $new);
+		$obj->action(
+		    other	=> $args{other},
+		    object	=> $args{object},
+		    flags	=> $attr->{flags},
+		    action	=> "attr:${aname}:on_change",
+		    args	=> {
+			name	=> $aname,
+			old	=> $old,
+			new	=> $new,
+		    },
+		) if (!$args{no_action} && $old ne $new && $key eq 'value');
 		next;
 	    }
 
-	    # Find out if the new value is out of bounds.
+	    # Find out if the new value is out of bounds. Note that for the
+	    # purposes of this code, we consider being right on the bounds
+	    # as OOB (perhaps this should be called OOOAB - Out Of Or At Bounds)
 	    my $too_small = ( defined($attr->{minimum}) &&
-				$new < $attr->{minimum} );
+				$new <= $attr->{minimum} );
 	    my $too_big   = ( defined($attr->{maximum}) &&
-				$new > $attr->{maximum} );
+				$new >= $attr->{maximum} );
 	    my $oob = ( $too_small || $too_big );
+	    my $excess;
 	    if ($oob) {
 
 		# Yes. Do we force it?
-		if ($args{force}) {
-		    # Yes, we do, so report an OOB condition. Note that this
-		    # occurs before the modification event. This gives the
-		    # OOB action the chance to cancel the modification action,
-		    # since the modifier action is guaranteed to come first.
-		    $obj->event("attr${epart}OutOfBounds", $aname,
-			old		=> $old,
-			new		=> $new,
-		    ) if (!$args{no_event});
-		} else {
+		if (!$args{force}) {
+
 		    # No, don't force it. But what do we do with the
 		    # modification?
 		    my $oob_what = $attr->{out_of_bounds};
 		    if ($oob_what eq 'ignore') {
+
 			# Ignore this change.
 			next;
+
 		    } else {
+
 			# Either use up what we can up to limit, or track the
 			# excess. In either case, we need to calculate the
 			# amount of excess. Note that 'track' is kind of like
 			# an implied force option.
-			my $excess;
 			if ($too_small) {
 			    $excess = $attr->{minimum} - $new;
 			    $new = $attr->{minimum} if ($oob_what eq 'use_up');
@@ -1156,16 +883,10 @@ sub _set_attr
 			    $excess = $new - $attr->{maximum};
 			    $new = $attr->{maximum} if ($oob_what eq 'use_up');
 			}
-			# Now invoke the attempted OOB event
-			my $atmp = ( $oob_what eq 'use_up' ? "Attempted" : "" );
-			$obj->event("attr${epart}${atmp}OutOfBounds",
-			    $aname,
-			    old		=> $old,
-			    new		=> $new,
-			    excess	=> $excess,
-			) if (!$args{no_event});
+
 		    }
-		}  # if $args{force}
+
+		}  # if !$args{force}
 
 	    }  # if $oob;
 
@@ -1177,44 +898,51 @@ sub _set_attr
 		if ($attr->{type} eq 'int' && !$attr->{track_fractional});
 	    $new = $attr->{$key};
 
-	    # Invoke modified event, but ONLY if it was modified.
-	    $obj->event("attr${epart}Modified", $aname,
-		old	=> $old,
-		new	=> $new,
-	    ) if (!$args{no_event} && $old != $new);
+	    # Invoke modified action, but ONLY if it was modified.
+	    $obj->action(
+		other	=> $args{other},
+		object	=> $args{object},
+		flags	=> $attr->{flags},
+		action	=> "attr:${aname}:on_change",
+		args	=> {
+		    name	=> $aname,
+		    old		=> $old,
+		    new		=> $new,
+		    change	=> ( $new - $old ),
+		},
+	    ) if (!$args{no_action} && $old != $new && $key eq 'value');
+
+	    # Invoke OOB actions
+	    $obj->action(
+		other	=> $args{other},
+		object	=> $args{object},
+		flags	=> $attr->{flags},
+		action	=> "attr:${aname}:on_minimum",
+		args	=> {
+		    name	=> $aname,
+		    old		=> $old,
+		    new		=> $new,
+		    excess	=> $excess,
+		    change	=> ( $new - $old ),
+		},
+	    ) if (!$args{no_action} && $too_small && $old != $new
+		&& $key eq 'value');
+	    $obj->action(
+		other	=> $args{other},
+		object	=> $args{object},
+		flags	=> $attr->{flags},
+		action	=> "attr:${aname}:on_maximum",
+		args	=> {
+		    name	=> $aname,
+		    old		=> $old,
+		    new		=> $new,
+		    excess	=> $excess,
+		    change	=> ( $new - $old ),
+		},
+	    ) if (!$args{no_action} && $too_big && $old != $new
+		&& $key eq 'value');
 
 	}  # foreach $key
-
-	# Done.
-	1;
-}
-
-# Save information in attribute to file.
-
-sub _save_attr
-{
-	my ($obj, $file, $aname) = @_;
-	my $attr = $obj->{attr}{$aname};
-
-	# Attribute header
-	print $file "ATTR:$aname\n$attr->{type}\n";
-
-	# Attribute info.
-	my @keys = (
-	    $attr->{type} eq 'any' ?
-		qw(value) :
-	    $attr->{type} eq 'string' ?
-		qw(value values map) :
-	    $attr->{type} eq 'int' ?
-		qw(value real_value tend_to_rate minimum maximum
-		   track_fractional on_fractional) :
-	    $attr->{type} eq 'number' ?
-		qw(value real_value tend_to_rate minimum maximum) :
-	    () );
-	foreach my $key (@keys) {
-	    print $file "$key\n";
-	    _SaveData($file, $attr->{$key});
-	}
 
 	# Done.
 	1;
@@ -1251,39 +979,89 @@ sub _protect_attrs
 # In a scalar context, it simply returns the hash ref of the attribute. In
 # an array context, it returns a list consisting of the hash ref and a flag
 # indicating whether this was inherited or not.
+#
+# Note that inheritance requires that the object manager be set up with
+# the inherit relationship or it only looks on the current object.
 
 sub _find_attr
 {
 	my ($obj, $aname) = @_;
-	my $aobj = $obj;
 	my $attr;
 	my $inherited = 0;
-	while (!$attr && $aobj) {
-	    if (defined($aobj->{attr}{$aname})) {
-		# Found attribute.
-		$attr = $aobj->{attr}{$aname};
-		$inherited = ( $aobj->{id} ne $obj->{id} );
-		if ($inherited && $attr->{flags} & ATTR_NO_INHERIT) {
-		    # But it was found on a parent, and we're not allowed
-		    # to inherit this attribute, so this is as good as not
-		    # being defined at all. Note that we leave $inherited
-		    # set, so the caller can tell if we failed to find it
-		    # because it did not exist or could not be inherited, in
-		    # case that makes a difference to the caller.
-		    undef $attr;
+
+	# Fetch the manager of this object, unless we're accessing the manager
+	# attribute itself, in which case we act as if there is no manager.
+	# This is to prevent infinite loops with manager(). Anyway, this
+	# attribute is not allowed to be inherited, so it works out.
+	my $man = ( $aname eq ANAME_MANAGER ? undef : $obj->manager() );
+
+	# Check for no inheritance relation
+	if (!$man || !$man->has_relation('inherit')) {
+
+	    if (defined($obj->{attr}{$aname})) {
+		wantarray ? ( $obj->{attr}{$aname}, 0 ) : $obj->{attr}{$aname};
+	    } else {
+		wantarray ? ( undef, 0 ) : undef;
+	    }
+
+	} else {
+
+	    # Do it
+	    my $aobj = $obj;
+	    while (!$attr && $aobj) {
+	        if (defined($aobj->{attr}{$aname})) {
+		    # Found attribute.
+		    $attr = $aobj->{attr}{$aname};
+		    $inherited = ( $aobj->{id} ne $obj->{id} );
+		    if ($inherited && $attr->{flags} & ATTR_NO_INHERIT) {
+		        # But it was found on a inherit, and we're not allowed
+		        # to inherit this attribute, so this is as good as not
+		        # being defined at all. Note that we leave $inherited
+		        # set, so the caller can tell if we failed to find it
+		        # because it did not exist or could not be inherited, in
+		        # case that makes a difference to the caller.
+		        undef $attr;
+		        last;
+		    }
+	        } elsif ($man->inheriting_from($aobj)) {
+		    # We have an inheritance, so check it.
+		    $aobj = $man->inheriting_from($aobj);
+	        } else {
+		    # No more inheritance up the line, so we stop.
+		    undef $aobj;
+	        }
+	    }
+
+	    # Return the result
+	    wantarray ? ( $attr, $inherited ) : $attr;
+	}
+}
+
+# Do the exact same thing for object flags. See _find_attr() for explanation
+# of the logic.
+
+sub _find_flag
+{
+	my ($obj, $fname) = @_;
+	my $fobj = $obj;
+	my $flag;
+	my $inherited = 0;
+	while (!$flag && $fobj) {
+	    if (defined($fobj->{flag}{$fname})) {
+		$flag = $fobj->{flag}{$fname};
+		$inherited = ( $fobj->{id} ne $obj->{id} );
+		if ($inherited && $flag->{flags} & FLAG_NO_INHERIT) {
+		    undef $flag;
 		    last;
 		}
-	    } elsif (defined($aobj->{parent})) {
-		# We have a parent, so check it.
-		$aobj = $aobj->{parent};
+	    } elsif (defined($fobj->{inherit})) {
+		$fobj = $fobj->{inherit};
 	    } else {
-		# No more parents up the line, so we stop.
-		undef $aobj;
+		undef $fobj;
 	    }
 	}
 
-	# Return the result
-	wantarray ? ( $attr, $inherited ) : $attr;
+	wantarray ? ( $flag, $inherited ) : $flag;
 }
 
 ####
@@ -1296,6 +1074,7 @@ sub _find_attr
 #			  are treated as an error.
 #    ATTR_DONTSAVE	- Don't save attribute on a call to save(). Also,
 #			  the existing value is preserved on a load().
+#    ATTR_NO_INHERIT	- Do not allow this attribute to be inherited.
 
 sub new_attr
 {
@@ -1308,6 +1087,7 @@ sub new_attr
 	    [ 'opt', 'type', 'any', [ qw(any int number string object) ] ],
 	    [ 'opt', 'priority', 0, 'int' ],
 	    [ 'opt', 'flags', 0, 'int' ],
+	    [ 'opt', 'on_change', undef, 'callback' ],
 	], 1 );
 
 	# Fetch additional args for integer types. Note that we allow the
@@ -1320,6 +1100,8 @@ sub new_attr
 	    [ 'opt', 'tend_to_rate', undef, 'number' ],
 	    [ 'opt', 'minimum', undef, 'int' ],
 	    [ 'opt', 'maximum', undef, 'int' ],
+	    [ 'opt', 'on_minimum', undef, 'callback' ],
+	    [ 'opt', 'on_maximum', undef, 'callback' ],
 	    [ 'opt', 'out_of_bounds', 'use_up', [ qw(use_up ignore track) ] ],
 	], 1 ) if ($attr->{type} eq 'int');
 
@@ -1330,6 +1112,8 @@ sub new_attr
 	    [ 'opt', 'tend_to_rate', undef, 'number' ],
 	    [ 'opt', 'minimum', undef, 'number' ],
 	    [ 'opt', 'maximum', undef, 'number' ],
+	    [ 'opt', 'on_minimum', undef, 'callback' ],
+	    [ 'opt', 'on_maximum', undef, 'callback' ],
 	    [ 'opt', 'out_of_bounds', 'use_up', [ qw(use_up ignore track) ] ],
 	    [ 'opt', 'precision', 2, 'int' ],
 	], 1 ) if ($attr->{type} eq 'number');
@@ -1341,17 +1125,17 @@ sub new_attr
 	    [ 'opt', 'map', {}, 'hashref' ],
 	], 1 ) if ($attr->{type} eq 'string');
 
-	# Fetch additional args for object types. Note that the class must
-	# be first registered.
+	# Fetch additional args for object types. Object refs are stored as-is,
+	# and it is assumed they will have their own custom load/save methods.
+	# Storing Games::Object-derived objects is prohibited; use the
+	# manager's object relationship features for that.
 	if ($attr->{type} eq 'object') {
 	    FetchParams(\@_, $attr, [
-	        [ 'opt', 'value', undef, 'string|object' ],
-	        [ 'opt', 'class', 'Games::Object', 'string' ],
-	        [ 'opt', 'store', 'ref', [ qw(id ref) ] ],
+	        [ 'opt', 'value', undef, 'object' ],
 	    ], 1 );
-	    croak "Class '$attr->{class}' is unknown to the data module " .
-		    "(Did you forget to call RegisterClass()?)"
-		if (!IsClassRegistered($attr->{class}));
+	    croak "Cannot use type 'object' for Games::Object-derived " .
+		  "objects (use object relationships in the manager for that)"
+		if (defined($attr->{value}) && _IsObject($attr->{value}));
 	}
 
 	# Fetch additional args for 'any' type.
@@ -1372,10 +1156,8 @@ sub new_attr
 	# Store.
 	my $aname = delete $attr->{name};
 	$obj->{attr}{$aname} = $attr;
-
-	# If an object type, call _set_attr() to perform any needed conversion
-	$obj->_set_attr($aname, value => $attr->{value}, no_event => 1)
-	    if ($attr->{type} eq 'object');
+	_CreateAccessorMethod($aname, 'attr')
+	    if ($AccessorMethod && !($attr->{flags} & ATTR_NO_ACCESSOR));
 
 	# If a real_value was defined but no tend-to, drop the real_value.
 	delete $attr->{real_value} if (!defined($attr->{tend_to_rate}));
@@ -1564,8 +1346,13 @@ sub mod_attr
 		my $mod = $obj->{pmod}{$id};
 		my $aname = $mod->{aname};
 		if (!$mod->{incremental}) {
-		    # Call myself to do the change.
-		    my %opts = ( -name => $aname );
+		    # Call myself to do the change. NOTE: We specify "other"
+		    # as myself. Why? Because whatever was causing the original
+		    # modification (i.e. the original "other") is no longer
+		    # apropos, since the change it initiated is no longer
+		    # present. One can think of the object itself now putting
+		    # back the original value.
+		    my %opts = ( -name => $aname, -other => $obj );
 		    $opts{modify} = -$mod->{modify}
 			if (defined($mod->{modify}));
 		    $opts{modify_real} = -$mod->{modify_real}
@@ -1602,8 +1389,8 @@ sub mod_attr
 
 	# The first thing we need to is actually find the attribute. If the
 	# attribute cannot be found on this object, we check to see if it
-	# has a parent, and keep checking up the parent tree until we find
-	# it.
+	# has an inheritance, and keep checking up the inheritance tree until
+	# we find it.
 	FetchParams(\@_, \%args, [
 	    [ 'req', 'name' ],
 	], 1 );
@@ -1620,12 +1407,14 @@ sub mod_attr
 	    if ($attr->{flags} & ATTR_STATIC);
 
 	# If we inherited this attribute, then clone it so that we have
-	# our own copy.
+	# our own copy. We do this via a clever trick: Using IO::String
+	# to create a stringified version of the data.
 	if ($inherited) {
 	    $obj->{attr}{$aname} = {};
-	    foreach my $key (keys %$attr) {
-		$obj->{attr}{$aname}{$key} = $attr->{$key};
-	    }
+	    my $iostr = IO::String->new();
+	    SaveData($iostr, $attr);
+	    seek $iostr, 0, 0;
+	    LoadData($iostr, $obj->{attr}{$aname});
 	    $attr = $obj->{attr}{$aname};
 	}
 
@@ -1645,16 +1434,19 @@ sub mod_attr
 	    [ 'opt', 'out_of_bounds', undef,	[ qw(ignore use_up track) ] ],
 	    [ 'opt', 'tend_to_rate',  undef,	$vtype ],
 	    [ 'opt', 'priority',    undef,	'int' ],
+	    [ 'opt', 'flags',	    undef,	'int' ],
 	    [ 'opt', 'value',       undef,      $vtype ],
 	    [ 'opt', 'real_value',  undef,      $vtype ],
 	    [ 'opt', 'modify',      undef,      $vtype ],
 	    [ 'opt', 'modify_real', undef,      $vtype ],
+	    [ 'opt', 'object',      undef,      'object' ],
+	    [ 'opt', 'other',       undef,      'object' ],
 	] );
 
 	# Check for property modifiers first.
 	my $pcount = 0;
 	foreach my $prop (qw(minimum maximum on_fractional out_of_bounds
-			     tend_to_rate priority)) {
+			     tend_to_rate priority flags)) {
 	    next if (!defined($args{$prop}));
 	    croak("Property '$prop' allowed only on numeric attribute")
 		if ($vtype !~ /^(int|number)$/);
@@ -1726,6 +1518,9 @@ sub mod_attr
 		# then replace it silently. The index value is used in sorting,
 		# so that when pmods of equal priority are placed in the object,
 		# they are guaranteed to run in the order they were created.
+		#
+		# Note that we store the "other" and "object" parameters as the
+		# object ID rather than the actual object ref itself.
 		$id = $args{persist_as};
 		$was_pmod = defined($obj->{pmod}{$id});
 		$mod = {
@@ -1743,6 +1538,8 @@ sub mod_attr
 		    applied	=> 0,
 		    locked	=> 0,
 		};
+		$mod->{other} = $args{other}->id() if ($args{other});
+		$mod->{object} = $args{object}->id() if ($args{object});
 		$obj->{pmod}{$id} = $mod;
 		$obj->{pmod_active}++ unless ($was_pmod);
 
@@ -1765,43 +1562,178 @@ sub mod_attr
 	    }
 
 	}  # if defined($args{value}) || defined($args{real_value})
-}
 
-####
-## SPECIAL QUEUING INTERNAL METHODS
-
-# Invoke a callback method of the format that would be specified for, say,
-# an event, with optional addition args. Returns the return code of the callback
-# method. If the callback passed is undef, returns 0.
-
-sub _invoke
-{
-	my $obj = shift;
-	my ($callbk, @moreargs) = @_;
-
-	return 0 if (!defined($callbk));
-
-	if (ref($callbk) eq 'ARRAY') {
-	    # Check the first member of the array. If it is an object, then
-	    # we're doing a proxy call. We invoke the callback on THIS
-	    # object instead.
-	    my @args = @$callbk;
-	    if ($args[0] =~ /^Games::Object\((.+)\)$/) {
-		my $pobj = Find($1);
-		shift @args;
-		my $meth = shift @args;
-		$pobj->$meth(@args, @moreargs, object => $obj);
-	    } else {
-	        my $meth = shift @args;
-	        $obj->$meth(@args, @moreargs);
-	    }
-	} else {
-	    $obj->$callbk(@moreargs);
-	}
+	1;
 }
 
 ####
 ## QUEUING AND CALLBACK CONTROL
+
+# Invoke a callback or an array of callbacks on object.
+
+sub invoke_callbacks
+{
+	my $self = shift;
+	my %args = ();
+
+	# Fetch parameters. Note that all parameters are optional. This is OK,
+	# but watch how you define your callbacks. If you have a callback that
+	# has "O:other" as the target but no 'other' parameter was passed, this
+	# will bomb.
+	FetchParams(\@_, \%args, [
+	    [ 'opt', 'other', undef, 'object' ],
+	    [ 'opt', 'object', undef, 'object' ],
+	    [ 'opt', 'action', undef, 'string' ],
+	    [ 'opt', 'callback', undef, 'callback' ],
+	    [ 'opt', 'args', {}, 'hashref' ],
+	    [ 'opt', 'flags', 0, 'int' ],
+	] );
+	my $other = $args{other};
+	my $object = $args{object};
+	my $action = $args{action};
+	my $callback = $args{callback};
+	my $aargs = $args{args};
+	my $flags = $args{flags};
+
+	# If the callback is undefined, this counts as success.
+	return 1 if (!$callback);
+
+	# If this is a list of callbacks rather than a callback itself, then
+	# invoke myself with each individual callback. Stop at any time we
+	# receive a return of false from a callback.
+	my @cargs = @$callback;
+	if (ref($cargs[0]) eq 'ARRAY') {
+	    my $rc = 0;
+	    my $nocheck = 0;
+	    while (my $callback = shift(@cargs)) {
+		# Check for special flags and commands.
+		if (!ref($callback)) {
+		    if ($callback eq 'FAIL') {
+			# Next item is a failure callback, so skip it, since
+			# we already know the previous one succeeded.
+		    	shift @cargs;
+		    } elsif ($callback eq 'NOCHECK') {
+			# Stop checking return codes and execute everything
+			# regardless (i.e. assume true return for each)
+			$nocheck = 1;
+		    } elsif ($callback eq 'CHECK') {
+			# Turn return code checking back on.
+			$nocheck = 0;
+		    }
+		    next;
+		}
+		# Invoke.
+		$rc = $self->invoke_callbacks(
+		    other	=> $other,
+		    object	=> $object,
+		    flags	=> $flags,
+		    action	=> $action,
+		    callback	=> $callback,
+		    args	=> $aargs,
+		);
+		# Force success if NOCHECK is on.
+		$rc = 1 if ($nocheck);
+		# If the callback failed, we will stop. But before that, see
+		# if the next item is a failure callback and execute it if
+		# so. We do NOT return the return value of these callbacks.
+		# We return the boolean false from the original non-failure
+		# callbacks to indicate that a failure indeed occurred.
+		if (!$rc) {
+		    if (@cargs && !ref($cargs[0]) && $cargs[0] eq 'FAIL') {
+			shift @cargs;
+			$callback = shift @cargs;
+			$self->invoke_callbacks(
+			    other	=> $other,
+			    object	=> $object,
+			    flags	=> $flags,
+			    action	=> $action,
+			    callback	=> $callback,
+			    args	=> $aargs,
+			);
+		    }
+		    last;
+		}
+	    }
+	    $rc;
+	} else {
+	    my $oname = shift @cargs;
+	    my $obj = (
+	        $oname eq 'O:self'	? $self :
+	        $oname eq 'O:other'	? $other :
+	        $oname eq 'O:object'	? $object :
+		$oname eq 'O:manager'	? $self->manager() :
+		$oname =~ /^O:(.+)$/	? $self->find($1) :
+					  $oname
+	    );
+	    # If the object was not found, look at the flags. If the MISSING_OK
+	    # flag is there, skip callback and return success, otherwise
+	    # return 0 to abort this list of callbacks.
+	    if (!$obj) {
+		return 1 if ($flags & ACT_MISSING_OK);
+	        croak("Object '$oname' not found in '$action' trigger " .
+		      "on $self->{id}");
+	    }
+	    # Now scan the arguments list and perform substitutions. Any
+	    # arg that starts with "A:" represents an arg to be retrieved
+	    # from either the $aargs list, or from the callback args (such
+	    # as self, other, etc).
+	    foreach my $arg (@cargs) {
+		# For performance reasons, check to see if any substitution is
+		# even needed.
+		next if ($arg !~ /[AO]:/);
+		# Now check for complete substitutions
+		my $narg;
+		$narg = (
+		    $arg =~ /^A:([a-zA-Z0-9_]+)$/ &&
+		    defined($aargs->{$1})	? $aargs->{$1} :
+		    $arg eq 'A:action'		? $action :
+		    $arg eq 'O:self'		? $self :
+		    $arg eq 'O:other'		? $other :
+		    $arg eq 'O:object'		? $object :
+		    $arg eq 'O:manager'		? $self->manager() :
+		    $arg =~ /^O:([a-zA-Z0-9_]+$)/
+						? $self->find($1)
+						: undef );
+		# If we found something, then set it and done.
+		if (defined($narg)) {
+		    $arg = $narg;
+		    next;
+		}
+		# Otherwise, we do a full substitution and eval() on it.
+		while ( $arg =~ /([OA]:[a-zA-Z0-9_]+)/ ) {
+		    my $subarg = $1;
+		    my $subval = (
+		        $subarg =~ /^A:([a-zA-Z0-9_]+)$/ &&
+		        defined($aargs->{$1})	        ? "'$aargs->{$1}'" :
+		        $subarg eq 'A:action'		? "'$action'" :
+		        $subarg eq 'O:self'		? '$self' :
+		        $subarg eq 'O:other'		? '$other' :
+		        $subarg eq 'O:object'		? '$object' :
+		        $subarg eq 'O:manager'		? '$self->manager()' :
+		        $subarg =~ /^O:([a-zA-Z0-9_]+$)/
+						        ? '$self->find($1)'
+						        : 'undef' );
+		    $arg =~ s/$subarg/$subval/g;
+		}
+		my $val = eval($arg);
+		croak "Failed on eval of arg expression << $arg >>: $@" if ($@);
+		$arg = $val;
+	    }
+	    # Invoke.
+	    if (!ref($obj)) {
+		# The user specified a name of a subroutine instead.
+		no strict 'refs';
+		&$obj(@cargs);
+	    } else {
+		# Object reference, so the next item is a method name. Note
+		# that this means you can do fancy things like specify the
+		# method name as an "A:*" specifier and thus have the method
+		# called defined in the args.
+	        my $meth = shift @cargs;
+	        $obj->$meth(@cargs);
+	    }
+	}
+}
 
 # Queue an action to be run when the object is processed. This must take the
 # form of a method name that can be invoked with the object reference. This is
@@ -1823,79 +1755,89 @@ sub queue
 	croak("Attempt to queue action for '$obj->{id}' with non-existent " .
 		"method name '$method'") if (!$obj->can($method));
 
+	# Examine the args. If any args are object refs derived from
+	# Games::Object, replace with their IDs instead, in case the object
+	# gets save()d before the queue is executed.
+	foreach my $aindex (0 .. $#args) {
+	    if (_IsObject($args[$aindex])) {
+		my $qindex = @{$obj->{queue}};
+		$args[$aindex] = $args[$aindex]->id();
+		$obj->{queue_changed}{$qindex}{$aindex} = "GO::id";
+	    }
+	}
+
 	# Okay to be queued.
 	push @{$obj->{queue}}, [ $method, @args ];
 	1;
 }
 
-# Bind an event to a corresponding action. This can actually be called as
-# either an object or class method, depending on the scope of the action.
+# Process an action.
 
-sub bind_event
+sub action
 {
-	my $obj = shift;
-	my ($key, $event, $callbk) = (
-	    @_ == 1 ? ( '*', '*', $_[0] ) :
-	    @_ == 2 ? ( '*', $_[0], $_[1] ) :
-	    @_ == 3 ? @_ :
-	    croak("Invalid number of arguments to bind_event()")
-	);
+	my $self = shift;
+	my %args = ();
 
-	# If the class was specified, then we will be tying the binding to
-	# the global object.
-	$obj = GlobalObject() if (!ref($obj));
+	# Fetch parameters.
+	FetchParams(\@_, \%args, [
+	    [ 'opt', 'other', undef, 'object' ],
+	    [ 'opt', 'object', undef, 'object' ],
+	    [ 'req', 'action', undef, 'string' ],
+	    [ 'opt', 'args', {}, 'hashref' ],
+	    [ 'opt', 'flags', 0, 'int' ],
+	] );
+	my $other = $args{other};
+	my $object = $args{object};
+	my $action = $args{action};
+	my $aargs = $args{args};
+	my $flags = $args{flags};
 
-	# If the callback is an array and the first item is an object
-	# reference, we want to convert this to something that will prevent
-	# potential circular references.
-	if (ref($callbk) eq 'ARRAY'
-	&& UNIVERSAL::isa($callbk->[0], 'Games::Object') ) {
-	    my $id = $callbk->[0]->id();
-	    $callbk->[0] = "Games::Object($id)";
-	}
+	# Find the callback
+	my $callback;
+	if ($action =~ /^attr:(.+):(.+)$/) {
 
-	# Assign/delete the binding.
-	if (!ref($callbk) && $callbk eq EVENT_NULL_CALLBACK) {
-	    delete $obj->{binding}{$key}{$event};
+	    # Attribute-based action.
+	    my $aname = $1;
+	    my $oname = $2;
+	    my $attr = $self->_find_attr($aname);
+	    $callback = $attr->{$oname}
+		if (defined($attr) && exists($attr->{$oname}));
+	    $flags |= $attr->{flags} if ($callback);
+
+	} elsif ($action =~ /^flag:(.+):(.+)$/) {
+
+	    # Attribute-based action.
+	    my $fname = $1;
+	    my $oname = $2;
+	    my $flag = $self->_find_flag($fname);
+	    $callback = $flag->{$oname}
+		if (defined($flag) && exists($flag->{$oname}));
+	    $flags |= $flag->{flags} if ($callback);
+
+	} elsif ($action =~ /^object:(.+)$/) {
+
+	    # Object-based action.
+	    my $oname = $1;
+	    $callback = $self->attr("_ACT_${oname}");
+
 	} else {
-	    $obj->{binding}{$key}{$event} = $callbk;
+
+	    croak("Undefined action syntax '$action'");
+
 	}
 
-	1;
-}
+	# Do nothing (successfully) if no callback was found.
+	return 1 if (!$callback);
 
-# Process an event.
-
-sub event
-{
-	my ($obj, $event, $key, @args) = @_;
-
-	# Events are never called directly on the global object.
-	return 1 if ($event eq 'GLOBAL_OBJ_ID');
-
-	my $gbl = GlobalObject();
-	my $rc;
-
-	# Add addition args.
-	push @args, (
-	    event	=> $event,
-	    key		=> $key,
+	# Otherwise invoke the callback and return its value.
+	$self->invoke_callbacks(
+	    other	=> $other,
+	    object	=> $object,
+	    action	=> $action,
+	    callback	=> $callback,
+	    args	=> $aargs,
+	    flags	=> $flags,
 	);
-
-	# Invoke all applicable callbacks.
-	return $rc
-	    if ($rc = $obj->_invoke($obj->{binding}{$key}{$event}, @args));
-	return $rc
-	    if ($rc = $obj->_invoke($gbl->{binding}{$key}{$event}, @args));
-	return $rc
-	    if ($rc = $obj->_invoke($obj->{binding}{'*'}{$event}, @args));
-	return $rc
-	    if ($rc = $obj->_invoke($gbl->{binding}{'*'}{$event}, @args));
-	return $rc
-	    if ($rc = $obj->_invoke($obj->{binding}{'*'}{'*'}, @args));
-	return $rc
-	    if ($rc = $obj->_invoke($gbl->{binding}{'*'}{'*'}, @args));
-	0;
 }
 
 ####
@@ -1904,14 +1846,15 @@ sub event
 # Process an object. This is used to do such actions as executing pending
 # actions on the queue, updating attributes, and so on. The real work is
 # farmed out to other methods, and the @process_list array tells us which
-# to call, which the user can alter with SetProcessList().
+# to call, or the user can pass in a different list.
 #
 # Note that we do not allow methods to be called recursively.
 
 sub process
 {
-	my $obj = shift;
+	my ($obj, $plist) = @_;
 
+	$plist = \@process_list if (!$plist);
 	foreach my $method (@process_list) {
 	    $obj->_lock_method($method);
 	    $obj->$method();
@@ -1921,7 +1864,7 @@ sub process
 }
 
 # Process all items on the object's queue until the queue is empty. To
-# prevent potential endless loops (routine A runs, places B on the queue,
+# praction potential endless loops (routine A runs, places B on the queue,
 # routine B runs, places A on the queue, etc), we track how many times we
 # saw a given method, and if it reaches a critical threshhold, we issue a
 # warning and do not execute that routine any more this time through. This
@@ -1933,9 +1876,23 @@ sub process_queue
 	my $queue = $obj->{queue};
 	my %mcount = ();
 
+	my $qindex = 0;
 	while (@$queue) {
 	    my $callbk = shift @$queue;
 	    my ($meth, @args) = @$callbk;
+	    if (defined($obj->{queue_changed})
+	     && defined($obj->{queue_changed}{$qindex}) ) {
+		# Some args were changed, so set them back.
+		my $changed = delete $obj->{queue_changed}{$qindex};
+		foreach my $aindex (keys %$changed) {
+		    my $change = $changed->{$aindex};
+		    if ($change eq 'GO::id') {
+			$args[$aindex] = $obj->find($args[$aindex]);
+		    } else {
+			croak "Unknown queue arg change type '$change'";
+		    }
+		}
+	    }
 	    $mcount{$meth} = 0 if (!defined($mcount{$meth}));
 	    if ($mcount{$meth} > $process_limit) {
 		# Already gave a warning on this, so ignore it silently.
@@ -1984,12 +1941,12 @@ sub process_tend_to
 		next;
 	    }
 
-	    # Set to the new value. Note that it is possible for something
-	    # modified with tend_to to go OOB, since we use the force option.
-	    # (FIXME: Do we want this behavior? Should the user have a choice
-	    # of behaviors? Min/max and tend_to_rates really don't mix very
-	    # well)
-	    $obj->_set_attr($aname, value => $new, force => 1);
+	    # Set to the new value. Note that we specify the "other" object
+	    # as ourselves, since the source of the change is ourself.
+	    $obj->_set_attr($aname,
+		value => $new,
+		force => 1,
+		other => $obj);
 
 	}
 
@@ -2046,6 +2003,8 @@ sub process_pmod
 		my %args = (
 		    -name	=> $aname,
 		    -force	=> $mod->{force},
+		    -other	=> $obj->find($mod->{other}),
+		    -object	=> $obj->find($mod->{object}),
 		);
 		$args{modify} = $mod->{modify}
 		  if (defined($mod->{modify}));
@@ -2066,47 +2025,56 @@ sub process_pmod
 ####
 ## MISCELLANEOUS OBJECT METHODS
 
-# Fetch the ID of object
+# Fetch/change the ID of object. Changing the ID may fail if the object is
+# managed and the manager does not like the new ID.
 
-sub id { shift->{id}; }
-
-# Modify the ID of an object. The new ID must not already exist as another
-# object.
-
-sub new_id
+sub id
 {
 	my ($obj, $id) = @_;
 
-	if (Find($id)) {
-	    croak("Attempt to rename '$obj->{id}' to '$id', which " .
-		    "already exists.");
-	} else {
-	    my $old_id = $obj->{id};
-	    $obj_index{$id} = $obj_index{$old_id};
-	    delete $obj_index{$old_id};
+	if (defined($id)) {
+	    my $man = $obj->manager();
+	    $man->id($obj, $id) if ($man);
 	    $obj->{id} = $id;
-	    $obj;
+	} else {
+	    $obj->{id};
 	}
 }
 
-# Fetch/set priority of object. Note that you cannot set the priority of
-# the global object, as this is controlled internally.
+# Fetch/set manager of object. Note that there is a difference between not
+# specifying a manager parameter at all and specifying undef:
+#
+#    $obj->manager($man)	- Sets the manager to object $man
+#    $obj->manager(undef)	- Clears the old manager setting without setting
+#				  a new one.
+#    $obj->manager()		- Returns the current manager setting
+
+sub manager
+{
+	my ($obj, $man) = @_;
+
+	if (@_ == 2) {
+	    $obj->del_attr(ANAME_MANAGER);
+	    $obj->new_attr(
+		name	=> ANAME_MANAGER,
+		type	=> 'any',
+		value	=> $man,
+		flags	=> ATTR_DONTSAVE | ATTR_NO_INHERIT,
+	    ) if ($man);
+	} else {
+	    $obj->attr(ANAME_MANAGER);
+	}
+}
+
+# Fetch/set priority of object.
 
 sub priority
 {
 	my $obj = shift;
 
 	if (@_) {
-	    if ($obj->id() eq GLOBAL_OBJ_ID) {
-		carp "Cannot set priority of global object";
-		return undef;
-	    }
 	    my $pri = shift;
-	    if ($pri >= $highest_pri) {
-		$highest_pri = $pri;
-		my $global = Find(GLOBAL_OBJ_ID);
-		$global->{priority} = $highest_pri + 1 if ($global);
-	    }
+	    $highest_pri = $pri if ($pri >= $highest_pri);
 	    my $oldpri = $obj->{priority};
 	    $obj->{priority} = $pri;
 	    $oldpri;
@@ -2118,29 +2086,43 @@ sub priority
 ####
 ## DESTRUCTORS
 
-# Destroy the object and remove it from the internal table. The caller can
-# pass in optional arbitrary parameters that are passed to any event binding.
+# Destroy the object and remove it from its manager's table. The caller can
+# pass in optional arbitrary parameters that are passed to any action binding.
 
 sub destroy
 {
 	my $obj = shift;
+	my %aargs = ();
 
-	# This next statement will prevent a "double-destroy", as this method
-	# is called again when the final reference is undefed.
-	return if (!defined($obj->{id}));
+	# Fetch parameters.
+	FetchParams(\@_, \%aargs, [
+	    [ 'opt', 'other', undef, 'object' ],
+	    [ 'opt', 'object', undef, 'object' ],
+	    [ 'opt', 'args', {}, 'hashref' ],
+	] );
 
-	# Trigger event BEFORE deletion so that the event code can examine
+	# Check to see if we have an attribute table. If not present, we
+	# did this already.
+	return 0 if (!defined($obj->{attr}));
+
+	# Trigger action BEFORE deletion so that the action code can examine
 	# the object
 	my $id = $obj->{id};
-	$obj->event('objectDestroyed', $id, @_);
+	$aargs{action} = 'object:on_destroy';
+	$obj->action(%aargs);
 
-	# Delete all keys so that it can no longer be used.
+	# Remove from manager, if applicable
+	my $man = $obj->manager();
+	$man->remove($obj->{id}) if ($man);
+
+	# Delete all keys so that it can no longer be used. This should free
+	# up all references to other objects.
 	foreach my $key (keys %$obj) {
 	    delete $obj->{$key};
 	}
 
-	# Remove from internal table.
-	delete $obj_index{$id};
+	# Done.
+	1;
 }
 
 1;

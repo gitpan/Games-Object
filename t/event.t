@@ -2,393 +2,665 @@
 
 # Events
 
-use strict;
-use Test;
+package GOTM;
 
-BEGIN { $| = 1; plan tests => 32 }
-
-# Write a small Perl module that we will use to subclass to Games::Object
-use File::Basename;
-my $pdir = dirname($0);
-unshift @INC, $pdir;
-my $pfile = "$pdir/GOTestModule.pm";
-open PKG, ">$pfile" or die "Unable to open file $pfile\n";
-print PKG '
-package GOTestModule;
+# GOTM = Games Object Test Module
 
 use strict;
+use warnings;
 use Exporter;
 use vars qw(@ISA @EXPORT);
 
 use Games::Object;
 
 @ISA = qw(Games::Object Exporter);
-@EXPORT = qw(@RESULTS);
+@EXPORT = qw(@RESULTS %RETCODE);
 
 use vars qw(@RESULTS %RETCODE);
 
 @RESULTS = ();
 %RETCODE = ();
 
+sub new
+{
+	my $class = shift;
+	my $obj = $class->SUPER::new(@_);
+	bless $obj, $class;
+	$obj;
+}
+
 sub initialize
 {
 	@RESULTS = ();
-	$RETCODE{event_global} = 1;
-	$RETCODE{event_global_mod} = 1;
-	$RETCODE{event_global_mod_attr1} = 1;
-	$RETCODE{event_global_mod_attr2} = 1;
-	$RETCODE{event_global_oob} = 1;
-	$RETCODE{event_global_oob_attr1} = 1;
-	$RETCODE{event_global_oob_attr2} = 1;
-	$RETCODE{event_object} = 1;
-	$RETCODE{event_object_mod} = 1;
-	$RETCODE{event_object_mod_attr1} = 1;
-	$RETCODE{event_object_mod_attr2} = 1;
-	$RETCODE{event_object_oob} = 1;
-	$RETCODE{event_object_oob_attr1} = 1;
-	$RETCODE{event_object_oob_attr2} = 1;
+	%RETCODE = (
+	    attr1a_changed		=> 1,
+	    attr1b_changed		=> 1,
+	    attr1_changed_by_me		=> 1,
+	    attr1_changed_by_other	=> 1,
+	    attr1_maxed			=> 1,
+	    attr1_minned		=> 1,
+	    attr2_changed		=> 1,
+	    attr2_changed_by_other	=> 1,
+	    attr2_maxed			=> 1,
+	    bop				=> 1,
+	    boop			=> 1,
+	    bif				=> 1,
+	    zot				=> 1,
+	);
 }
 
-# Note that not all of the following event methods may be used in the test,
-# but all are defined in case the test needs to be expanded later.
-
-sub event_global {
-	shift;
-	my %args = @_;
-	push @RESULTS, \%args;
-	return $RETCODE{event_global};
+sub attr1a_changed
+{
+	my ($obj, $name, $action, $old, $new, @uargs) = @_;
+	push @RESULTS, [ $obj->id(), 'attr1a_changed', $name, $action, $old, $new, @uargs ];
+	$RETCODE{attr1a_changed};
 }
 
-sub event_global_mod {
-	shift;
-	my %args = @_;
-	push @RESULTS, \%args;
-	return $RETCODE{event_global_mod};
+sub attr1b_changed
+{
+	my ($obj, $name, $action, $old, $new, @uargs) = @_;
+	push @RESULTS, [ $obj->id(), 'attr1b_changed', $name, $action, $old, $new, @uargs ];
+	$RETCODE{attr1b_changed};
 }
 
-sub event_global_mod_attr1 {
-	shift;
-	my %args = @_;
-	push @RESULTS, \%args;
-	return $RETCODE{event_global_mod_attr1};
-}
-
-sub event_global_mod_attr2 {
-	shift;
-	my %args = @_;
-	push @RESULTS, \%args;
-	return $RETCODE{event_global_mod_attr2};
-}
-
-sub event_global_oob {
-	shift;
-	my %args = @_;
-	push @RESULTS, \%args;
-	return $RETCODE{event_global_oob};
-}
-
-sub event_global_oob_attr1 {
-	shift;
-	my %args = @_;
-	push @RESULTS, \%args;
-	return $RETCODE{event_global_oob_attr1};
-}
-
-sub event_global_oob_attr2 {
-	shift;
-	my %args = @_;
-	push @RESULTS, \%args;
-	return $RETCODE{event_global_oob_attr2};
-}
-
-sub event_object {
-	shift;
-	my %args = @_;
-	push @RESULTS, \%args;
-	return $RETCODE{event_object};
-}
-
-sub event_object_mod {
-	shift;
-	my %args = @_;
-	push @RESULTS, \%args;
-	return $RETCODE{event_object_mod};
-}
-
-sub event_object_mod_attr1 {
-	shift;
-	my %args = @_;
-	push @RESULTS, \%args;
-	return $RETCODE{event_object_mod_attr1};
-}
-
-sub event_object_mod_attr2 {
-	shift;
-	my %args = @_;
-	push @RESULTS, \%args;
-	return $RETCODE{event_object_mod_attr2};
-}
-
-sub event_object_oob {
-	shift;
-	my %args = @_;
-	push @RESULTS, \%args;
-	return $RETCODE{event_object_oob};
-}
-
-sub event_object_oob_attr1 {
-	shift;
-	my %args = @_;
-	push @RESULTS, \%args;
-	return $RETCODE{event_object_oob_attr1};
-}
-
-sub event_object_oob_attr2 {
-	shift;
-	my %args = @_;
-	push @RESULTS, \%args;
-	return $RETCODE{event_object_oob_attr2};
-}
-
-sub event_object_load {
-	my $obj = shift;
-	my %args = @_;
-	my $file = $args{file};
-	my $line = <$file>;
-	chomp $line;
-	push @RESULTS, $obj->id() . ": $line";
+sub attr1b_failed
+{
+	my ($obj, $name, $action, $old, $new, @uargs) = @_;
+	push @RESULTS, [ $obj->id(), 'attr1b_failed', $name, $action, $old, $new, @uargs ];
 	1;
 }
 
-sub event_object_save {
-	my $obj = shift;
-	my %args = @_;
-	my $number = $obj->attr("number");
-	my $tree = $obj->attr("tree");
-	my $file = $args{file};
-	print $file "And now, number $number, the $tree\n";
-	1;
+sub attr1_changed_by_me
+{
+	my ($obj, $name, $action, $old, $new, @uargs) = @_;
+	push @RESULTS, [ $obj->id(), 'attr1_changed_by_me', $name, $action, $old, $new, @uargs ];
+	$RETCODE{attr1_changed_by_me};
 }
 
-sub event_object_destroy {
-	my $obj = shift;
-	my %args = @_;
-	my $nn = $args{nudge_nudge};
-	push @RESULTS, $obj->id() . ": $nn";
-	1;
+sub attr1_changed_by_other
+{
+	my ($obj, $name, $action, $old, $new, @uargs) = @_;
+	push @RESULTS, [ $obj->id(), 'attr1_changed_by_other', $name, $action, $old, $new, @uargs ];
+	$RETCODE{attr1_changed_by_other};
 }
 
-1;
-';
-close PKG;
+sub attr1_maxed
+{
+	my ($obj, $name, $action, $old, $new, @uargs) = @_;
+	push @RESULTS, [ $obj->id(), 'attr1_maxed', $name, $action, $old, $new, @uargs ];
+	$RETCODE{attr1_maxed};
+}
 
-use Games::Object qw(Find Process TotalObjects $CompareFunction);
+sub attr1_minned
+{
+	my ($obj, $name, $action, $old, $new, @uargs) = @_;
+	push @RESULTS, [ $obj->id(), 'attr1_minned', $name, $action, $old, $new, @uargs ];
+	$RETCODE{attr1_minned};
+}
+
+sub attr2_changed
+{
+	my ($obj, $name, $action, $old, $new, @uargs) = @_;
+	push @RESULTS, [ $obj->id(), 'attr2_changed', $name, $action, $old, $new, @uargs ];
+	$RETCODE{attr2_changed};
+}
+
+sub attr2_changed_by_other
+{
+	my ($obj, $name, $action, $old, $new, @uargs) = @_;
+	push @RESULTS, [ $obj->id(), 'attr2_changed_by_other', $name, $action, $old, $new, @uargs ];
+	$RETCODE{attr2_changed_by_other};
+}
+
+sub attr2_maxed
+{
+	my ($obj, $name, $action, $old, $new, @uargs) = @_;
+	push @RESULTS, [ $obj->id(), 'attr2_maxed', $name, $action, $old, $new, @uargs ];
+	$RETCODE{attr2_maxed};
+}
+
+sub simple_test
+{
+	my ($self, $other, $object, $arg) = @_;
+	push @RESULTS, [ $self, $other, $object, $arg ];
+}
+
+sub bop_func
+{
+	my ($obj, $other, @args) = @_;
+	push @RESULTS, [ $obj->id(), 'bop', $other, @args ];
+	$RETCODE{bop};
+}
+
+sub boop_func
+{
+	my ($obj, $other, @args) = @_;
+	push @RESULTS, [ $obj->id(), 'boop', $other, @args ];
+	$RETCODE{bop};
+}
+
+sub bif_func
+{
+	my ($obj, $other, @args) = @_;
+	push @RESULTS, [ $obj->id(), 'bif', $other, @args ];
+	$RETCODE{bif};
+}
+
+sub zot_func
+{
+	my ($obj, $other, @args) = @_;
+	push @RESULTS, [ $obj->id(), 'zot', $other, @args ];
+	$RETCODE{zot};
+}
+
+package main;
+
+use strict;
+use warnings;
+use Test;
+use Games::Object::Manager;
+use Games::Object qw($CompareFunction ACT_MISSING_OK);
 use IO::File;
 
-# This was added in v0.05 so that we can know the order in which objects
-# will process through this test, otherwise test 26 fails on some platforms
-# and Perl versions. This also acts as an indirect test of the new feature.
-$CompareFunction = '_CompareCreationOrder';
+BEGIN { $| = 1; plan tests => 39 }
 
-# Create an object from the subclassed test module.
-require GOTestModule;
-my $obj = GOTestModule->new();
-ok( defined($obj) && $obj->isa('Games::Object') );
+sub Attr2Changed
+{
+	my ($name, $action, $old, $new, @uargs) = @_;
+	push @GOTM::RESULTS,
+	  [ 'NONE', 'Attr2Changed', $name, $action, $old, $new, @uargs ];
+	1;
+}
 
-# Create two attributes on the object.
-$obj->new_attr(
+# Create three objects from the subclassed test module and add to manager.
+my $man = Games::Object::Manager->new();
+my $obj1 = GOTM->new(id => "Object1");
+my $obj2 = GOTM->new(id => "Object2");
+my $obj3 = GOTM->new(id => "Object3");
+ok( defined($obj1) && $obj1->isa('Games::Object')
+ && defined($obj2) && $obj2->isa('Games::Object')
+ && defined($obj3) && $obj3->isa('Games::Object') );
+$man->add($obj1);
+$man->add($obj2);
+$man->add($obj3);
+
+# Create two attributes on the first object.
+$obj1->new_attr(
     -name	=> "attr1",
     -type	=> "int",
     -value	=> 50,
+    -minimum	=> 0,
     -maximum	=> 100,
+    -on_change	=> [
+	[ 'O:self', 'attr1a_changed', 'A:action', 'A:name', 'A:old', 'A:new',
+	  'foo', 'bar' ],
+	[ 'O:self', 'attr1b_changed', 'A:action', 'A:name', 'A:old', 'A:new',
+	  'baz', 'fud' ],
+	FAIL => [ 'O:self', 'attr1b_failed', 'A:action', 'A:name',
+		  'A:old', 'A:new', 'oopsie', 'daisy' ],
+	[ 'O:other', 'attr1_changed_by_me', 'A:action', 'A:name',
+	  'A:old', 'A:new', 'goof' ],
+    ],
+    -on_maximum	=> [ 'O:self', 'attr1_maxed', 'A:action', 'A:name',
+		     'A:old', 'A:new', 'A:excess', 'dud' ],
+    -on_minimum => [ 'O:self', 'attr1_minned', 'A:action', 'A:name',
+		     'A:old', 'A:new', 'A:excess', 'doof' ],
 );
-$obj->new_attr(
+$obj1->new_attr(
     -name	=> "attr2",
     -type	=> "int",
     -value	=> 25,
+    -minimum	=> 0,
     -maximum	=> 50,
+    -on_change 	=> [
+	[ 'O:self', 'attr2_changed', 'A:action', 'A:name', 'A:old', 'A:new',
+	  'bif','bop' ],
+	[ 'O:Object3', 'attr2_changed_by_other', 'A:action', 'A:name',
+	  'A:old', 'A:new', 'gloop' ],
+	[ 'main::Attr2Changed', 'A:action', 'A:name', 'A:old', 'A:new',
+	  'barf', 'bork' ],
+    ],
+    -on_maximum	=> [ 'O:self', 'attr2_maxed', 'A:action', 'A:name',
+		     'A:old', 'A:new', 'bip', 'boop', 'bonk' ],
 );
 
-# Modify these attibutes before registering events. No events should be called.
-$obj->initialize();
-$obj->mod_attr(-name => "attr1", -modify => 15);
-$obj->mod_attr(-name => "attr2", -modify => 5);
-ok( @GOTestModule::RESULTS == 0 );
-
-# Add generic events for modifying an attribute
-eval('$obj->bind_event("attrValueModified", [ "event_object_mod", foo => "bar" ])');
-ok ( $@ eq '' );
-eval('$obj->bind_event("attrValueAttemptedOutOfBounds", [ "event_object_oob", foo => "baz" ])');
-ok ( $@ eq '' );
-
-# Modify attributes again. We should get some events this time.
-$obj->initialize();
-$obj->mod_attr(-name => "attr1", -modify => 15);
-$obj->mod_attr(-name => "attr2", -modify => 5);
-ok( @GOTestModule::RESULTS == 2 );
-ok( $GOTestModule::RESULTS[0]{event} eq 'attrValueModified'
- && $GOTestModule::RESULTS[0]{foo} eq 'bar'
- && $GOTestModule::RESULTS[0]{key} eq 'attr1'
- && $GOTestModule::RESULTS[0]{old} == 65
- && $GOTestModule::RESULTS[0]{new} == 80 );
-ok( $GOTestModule::RESULTS[1]{event} eq 'attrValueModified'
- && $GOTestModule::RESULTS[1]{foo} eq 'bar'
- && $GOTestModule::RESULTS[1]{key} eq 'attr2'
- && $GOTestModule::RESULTS[1]{old} == 30
- && $GOTestModule::RESULTS[1]{new} == 35 );
-
-# Bind a global modify event and modify the attributes again. We still should
-# get the same two events since all the return codes are 1.
-$obj->initialize();
-eval('Games::Object->bind_event("attrValueModified", [ "event_global_mod", foo => "fud" ])');
+# Add persistent modifiers to both, make sure no actions called yet.
+GOTM->initialize();
+eval('$obj1->mod_attr(
+    -name	=> "attr1",
+    -modify	=> 30,
+    -persist_as	=> "Object1_attr1_modifier",
+    -incremental => 1,
+    -other	=> $obj2,
+);');
 ok( $@ eq '' );
-$obj->mod_attr(-name => "attr1", -modify => 15);
-$obj->mod_attr(-name => "attr2", -modify => 5);
-ok( @GOTestModule::RESULTS == 2 );
-ok( $GOTestModule::RESULTS[0]{event} eq 'attrValueModified'
- && $GOTestModule::RESULTS[0]{foo} eq 'bar'
- && $GOTestModule::RESULTS[0]{key} eq 'attr1'
- && $GOTestModule::RESULTS[0]{old} == 80
- && $GOTestModule::RESULTS[0]{new} == 95 );
-ok( $GOTestModule::RESULTS[1]{event} eq 'attrValueModified'
- && $GOTestModule::RESULTS[1]{foo} eq 'bar'
- && $GOTestModule::RESULTS[1]{key} eq 'attr2'
- && $GOTestModule::RESULTS[1]{old} == 35
- && $GOTestModule::RESULTS[1]{new} == 40 );
+print "# \$@ = $@" if ($@);
+eval('$obj1->mod_attr(
+    -name	=> "attr2",
+    -modify	=> 10,
+    -persist_as	=> "Object1_attr2_modifier",
+    -incremental => 1,
+    -other	=> $obj2,
+);');
+ok( $@ eq '' );
+print "# \$@ = $@" if ($@);
+ok( @GOTM::RESULTS == 0 );
 
-# Now set the return code for the specific event to 1, and we should get five
-# events (the four modify and one OOB)
-$obj->initialize();
-$GOTestModule::RETCODE{event_object_mod} = 0;
-$obj->mod_attr(-name => "attr1", -modify => 15);
-$obj->mod_attr(-name => "attr2", -modify => 5);
-ok( @GOTestModule::RESULTS == 5 );
-# Hmmm ... the OOB event comes before the modify. Is this what we ultimately
-# want?
-ok( $GOTestModule::RESULTS[0]{event} eq 'attrValueAttemptedOutOfBounds'
- && $GOTestModule::RESULTS[0]{foo} eq 'baz'
- && $GOTestModule::RESULTS[0]{key} eq 'attr1'
- && $GOTestModule::RESULTS[0]{old} == 95
- && $GOTestModule::RESULTS[0]{new} == 100
- && $GOTestModule::RESULTS[0]{excess} == 10 );
-ok( $GOTestModule::RESULTS[1]{event} eq 'attrValueModified'
- && $GOTestModule::RESULTS[1]{foo} eq 'bar'
- && $GOTestModule::RESULTS[1]{key} eq 'attr1'
- && $GOTestModule::RESULTS[1]{old} == 95
- && $GOTestModule::RESULTS[1]{new} == 100 );
-ok( $GOTestModule::RESULTS[2]{event} eq 'attrValueModified'
- && $GOTestModule::RESULTS[2]{foo} eq 'fud'
- && $GOTestModule::RESULTS[2]{key} eq 'attr1'
- && $GOTestModule::RESULTS[2]{old} == 95
- && $GOTestModule::RESULTS[2]{new} == 100 );
-ok( $GOTestModule::RESULTS[3]{event} eq 'attrValueModified'
- && $GOTestModule::RESULTS[3]{foo} eq 'bar'
- && $GOTestModule::RESULTS[3]{key} eq 'attr2'
- && $GOTestModule::RESULTS[3]{old} == 40
- && $GOTestModule::RESULTS[3]{new} == 45 );
-ok( $GOTestModule::RESULTS[4]{event} eq 'attrValueModified'
- && $GOTestModule::RESULTS[4]{foo} eq 'fud'
- && $GOTestModule::RESULTS[4]{key} eq 'attr2'
- && $GOTestModule::RESULTS[4]{old} == 40
- && $GOTestModule::RESULTS[4]{new} == 45 );
+# Process modifiers, check that all actions were called with proper args. This
+# is a VERY extensive test, meant to insure that EVERY datum is present in
+# a typical set of action triggers. Subsequent tests will test a subset of
+# these.
+$man->process();
+ok( @GOTM::RESULTS == 6 );
+print "# RESULTS has " . scalar(@GOTM::RESULTS) . " items (should have 6)\n"
+  if (@GOTM::RESULTS != 6);
+# Callback #1
+ok(
+# Object ID parameter
+    $GOTM::RESULTS[0][0] eq 'Object1'
+# Method name
+ && $GOTM::RESULTS[0][1] eq 'attr1a_changed'
+# Callback args
+ && $GOTM::RESULTS[0][2] eq 'attr:attr1:on_change'
+ && $GOTM::RESULTS[0][3] eq 'attr1'
+ && $GOTM::RESULTS[0][4] == 50
+ && $GOTM::RESULTS[0][5] == 80
+ && $GOTM::RESULTS[0][6] eq 'foo'
+ && $GOTM::RESULTS[0][7] eq 'bar' );
+# Callback #2
+ok(
+# Object ID parameter
+    $GOTM::RESULTS[1][0] eq 'Object1'
+# Method name
+ && $GOTM::RESULTS[1][1] eq 'attr1b_changed'
+# Callback args
+ && $GOTM::RESULTS[1][2] eq 'attr:attr1:on_change'
+ && $GOTM::RESULTS[1][3] eq 'attr1'
+ && $GOTM::RESULTS[1][4] == 50
+ && $GOTM::RESULTS[1][5] == 80
+ && $GOTM::RESULTS[1][6] eq 'baz'
+ && $GOTM::RESULTS[1][7] eq 'fud' );
+# Callback #3
+ok(
+# Object ID parameter
+    $GOTM::RESULTS[2][0] eq 'Object2'
+# Method name
+ && $GOTM::RESULTS[2][1] eq 'attr1_changed_by_me'
+# Callback args
+ && $GOTM::RESULTS[2][2] eq 'attr:attr1:on_change'
+ && $GOTM::RESULTS[2][3] eq 'attr1'
+ && $GOTM::RESULTS[2][4] == 50
+ && $GOTM::RESULTS[2][5] == 80
+ && $GOTM::RESULTS[2][6] eq 'goof' );
+# Callback #4
+ok(
+# Object ID parameter
+    $GOTM::RESULTS[3][0] eq 'Object1'
+# Method name
+ && $GOTM::RESULTS[3][1] eq 'attr2_changed'
+# Callback args
+ && $GOTM::RESULTS[3][2] eq 'attr:attr2:on_change'
+ && $GOTM::RESULTS[3][3] eq 'attr2'
+ && $GOTM::RESULTS[3][4] == 25
+ && $GOTM::RESULTS[3][5] == 35
+ && $GOTM::RESULTS[3][6] eq 'bif'
+ && $GOTM::RESULTS[3][7] eq 'bop' );
+# Callback #5
+ok(
+# Object ID parameter
+    $GOTM::RESULTS[4][0] eq 'Object3'
+# Method name
+ && $GOTM::RESULTS[4][1] eq 'attr2_changed_by_other'
+# Callback args
+ && $GOTM::RESULTS[4][2] eq 'attr:attr2:on_change'
+ && $GOTM::RESULTS[4][3] eq 'attr2'
+ && $GOTM::RESULTS[4][4] == 25
+ && $GOTM::RESULTS[4][5] == 35
+ && $GOTM::RESULTS[4][6] eq 'gloop' );
+# Callback #6
+ok(
+# Object ID parameter
+    $GOTM::RESULTS[5][0] eq 'NONE'
+# Method name
+ && $GOTM::RESULTS[5][1] eq 'Attr2Changed'
+# Callback args
+ && $GOTM::RESULTS[5][2] eq 'attr:attr2:on_change'
+ && $GOTM::RESULTS[5][3] eq 'attr2'
+ && $GOTM::RESULTS[5][4] == 25
+ && $GOTM::RESULTS[5][5] == 35
+ && $GOTM::RESULTS[5][6] eq 'barf'
+ && $GOTM::RESULTS[5][7] eq 'bork' );
 
-$obj->initialize();
-$GOTestModule::RETCODE{event_object_mod} = 0;
+# Now process again. This time we should see 7 actions, as one attribute
+# hits its maximum and triggers the extra callback.
+GOTM->initialize();
+$man->process();
+ok( @GOTM::RESULTS == 7 );
+print "# RESULTS has " . scalar(@GOTM::RESULTS) . " items (should have 7)\n"
+  if (@GOTM::RESULTS != 7);
+# Check that the actions got in the queue in the right order.
+ok( $GOTM::RESULTS[0][0] eq 'Object1'
+ && $GOTM::RESULTS[0][2] eq 'attr:attr1:on_change'
+ && $GOTM::RESULTS[1][0] eq 'Object1'
+ && $GOTM::RESULTS[1][2] eq 'attr:attr1:on_change'
+ && $GOTM::RESULTS[2][0] eq 'Object2'
+ && $GOTM::RESULTS[2][2] eq 'attr:attr1:on_change'
+ && $GOTM::RESULTS[3][0] eq 'Object1'
+ && $GOTM::RESULTS[3][2] eq 'attr:attr1:on_maximum'
+ && $GOTM::RESULTS[4][0] eq 'Object1'
+ && $GOTM::RESULTS[4][2] eq 'attr:attr2:on_change'
+ && $GOTM::RESULTS[5][0] eq 'Object3'
+ && $GOTM::RESULTS[5][2] eq 'attr:attr2:on_change'
+ && $GOTM::RESULTS[6][0] eq 'NONE'
+ && $GOTM::RESULTS[6][2] eq 'attr:attr2:on_change' );
+# Now check that EVERY datum for an on_maximum is present.
+ok(
+# Object ID parameter
+    $GOTM::RESULTS[3][0] eq 'Object1'
+# Method name
+ && $GOTM::RESULTS[3][1] eq 'attr1_maxed'
+# Callback args
+ && $GOTM::RESULTS[3][2] eq 'attr:attr1:on_maximum'
+ && $GOTM::RESULTS[3][3] eq 'attr1'
+ && $GOTM::RESULTS[3][4] == 80
+ && $GOTM::RESULTS[3][5] == 100
+ && $GOTM::RESULTS[3][6] == 10
+ && $GOTM::RESULTS[3][7] eq 'dud' );
 
-# For the final set of tests, we'll check to see if the new load and save
-# events work (added v0.03). Clear out all the existing objects and create
-# some new ones. Set the save/load events on some of them.
-undef $obj;
-Process('destroy');
-ok( TotalObjects() == 0 );
-my $obj1 = GOTestModule->new(-id => 'Object 1');
-my $obj2 = GOTestModule->new(-id => 'Object 2');
-my $obj3 = GOTestModule->new(-id => 'Object 3');
-ok( $obj1 && $obj2 && $obj3 );
+# Process again. We should see 4 items. We will not see anything
+# from attr1, since it cannot change once at max. attr2 should see mod
+# events, plus the max-out callback.
+GOTM->initialize();
+$man->process();
+ok( @GOTM::RESULTS == 4 );
+print "# RESULTS has " . scalar(@GOTM::RESULTS) . " items (should have 4)\n"
+  if (@GOTM::RESULTS != 4);
+# Check that the actions got in the queue in the right order.
+ok( $GOTM::RESULTS[0][0] eq 'Object1'
+ && $GOTM::RESULTS[0][2] eq 'attr:attr2:on_change'
+ && $GOTM::RESULTS[1][0] eq 'Object3'
+ && $GOTM::RESULTS[1][2] eq 'attr:attr2:on_change'
+ && $GOTM::RESULTS[2][0] eq 'NONE'
+ && $GOTM::RESULTS[2][2] eq 'attr:attr2:on_change'
+ && $GOTM::RESULTS[3][0] eq 'Object1'
+ && $GOTM::RESULTS[3][2] eq 'attr:attr2:on_maximum' );
+
+# Process one more time. NO events should be generated.
+GOTM->initialize();
+$man->process();
+ok( @GOTM::RESULTS == 0 );
+print "# RESULTS has " . scalar(@GOTM::RESULTS) . " items (should have 0)\n"
+  if (@GOTM::RESULTS != 0);
+
+# Attempt to reset the first attribute to 0 without specifying an other object.
+# This first attempt should fail.
+GOTM->initialize();
+eval('$obj1->mod_attr(-name => "attr1", -value => 0);');
+ok( $@ && $@ =~ /Object 'O:other' not found/ );
+
+# Set attr1 back to some non-0 value, since the attribute has been modified
+# when the error above is encountered.
+$obj1->mod_attr(-name => "attr1", -value => 10, -other => $obj2);
+
+# Add the ACT_MISSING_OK flag to the first attribute and now try to set both
+# attributes to minimum. We should see 6 events (2 for attr1 modification,
+# skipping the one that references O:other, 3 for attr2 modification, and 1
+# for attr1 reaching minimum)
+GOTM->initialize();
+$obj1->mod_attr(-name => 'attr1', -flags => ACT_MISSING_OK);
+$obj1->mod_attr(-name => 'attr1', -value => 0);
+$obj1->mod_attr(-name => 'attr2', -value => 0);
+ok( @GOTM::RESULTS == 6 );
+print "# RESULTS has " . scalar(@GOTM::RESULTS) . " items (should have 6)\n"
+  if (@GOTM::RESULTS != 6);
+# Check that the actions got in the queue in the right order.
+ok( $GOTM::RESULTS[0][0] eq 'Object1'
+ && $GOTM::RESULTS[0][2] eq 'attr:attr1:on_change'
+ && $GOTM::RESULTS[1][0] eq 'Object1'
+ && $GOTM::RESULTS[1][2] eq 'attr:attr1:on_change'
+ && $GOTM::RESULTS[2][0] eq 'Object1'
+ && $GOTM::RESULTS[2][2] eq 'attr:attr1:on_minimum'
+ && $GOTM::RESULTS[3][0] eq 'Object1'
+ && $GOTM::RESULTS[3][2] eq 'attr:attr2:on_change'
+ && $GOTM::RESULTS[4][0] eq 'Object3'
+ && $GOTM::RESULTS[4][2] eq 'attr:attr2:on_change'
+ && $GOTM::RESULTS[5][0] eq 'NONE'
+ && $GOTM::RESULTS[5][2] eq 'attr:attr2:on_change' );
+
+# Now test the ability of the return code of a callback to abort the execution
+# of a sequence of callbacks and invoke the failure callback.
+GOTM->initialize();
+$GOTM::RETCODE{attr1b_changed} = 0;
+$GOTM::RETCODE{attr2_changed} = 0;
+$obj1->process();
+ok( @GOTM::RESULTS == 4 );
+print "# RESULTS has " . scalar(@GOTM::RESULTS) . " items (should have 4)\n"
+  if (@GOTM::RESULTS != 4);
+ok( $GOTM::RESULTS[0][0] eq 'Object1'
+# Callbacks for attr1 stop at attr1b_changed
+ && $GOTM::RESULTS[0][1] eq 'attr1a_changed'
+ && $GOTM::RESULTS[0][2] eq 'attr:attr1:on_change'
+ && $GOTM::RESULTS[1][0] eq 'Object1'
+ && $GOTM::RESULTS[1][1] eq 'attr1b_changed'
+ && $GOTM::RESULTS[1][2] eq 'attr:attr1:on_change'
+# But the failure callback should be invoked
+ && $GOTM::RESULTS[2][0] eq 'Object1'
+ && $GOTM::RESULTS[2][1] eq 'attr1b_failed'
+ && $GOTM::RESULTS[2][2] eq 'attr:attr1:on_change'
+# While they stop for attr2_changed on attr2
+ && $GOTM::RESULTS[3][0] eq 'Object1'
+ && $GOTM::RESULTS[3][1] eq 'attr2_changed'
+ && $GOTM::RESULTS[3][2] eq 'attr:attr2:on_change' );
+
+# As a final test of attribute actions, create a new attribute with accessors
+# turn on and make sure we can pass in objects and arguments correctly.
+GOTM->initialize();
+$Games::Object::AccessorMethod = 1;
 $obj1->new_attr(
-    -name	=> 'tree',
-    -type	=> 'string',
-    -value	=> 'larch',
+    -name	=> "simple",
+    -type	=> "int",
+    -value	=> 10,
+    -on_change	=> [ 'O:self', 'simple_test', 'O:other', 'O:object', 'A:new' ],
 );
-$obj1->new_attr(
-    -name	=> 'number',
-    -type	=> 'int',
-    -value	=> 1,
+eval('$obj1->simple(9);');
+ok( $@ eq '' );
+print "# DEBUG: \$@ = $@" if ($@);
+eval('$obj1->simple(8, $obj2);');
+ok( $@ eq '' );
+print "# DEBUG: \$@ = $@" if ($@);
+eval('$obj1->simple(7, $obj2, $obj3);');
+ok( $@ eq '' );
+print "# DEBUG: \$@ = $@" if ($@);
+eval('$obj1->mod_simple(1);');
+ok( $@ eq '' );
+print "# DEBUG: \$@ = $@" if ($@);
+eval('$obj1->mod_simple(1, $obj2);');
+ok( $@ eq '' );
+print "# DEBUG: \$@ = $@" if ($@);
+eval('$obj1->mod_simple(1, $obj2, $obj3);');
+ok( $@ eq '' );
+print "# DEBUG: \$@ = $@" if ($@);
+ok( @GOTM::RESULTS == 6
+ && defined($GOTM::RESULTS[0][0]) && $GOTM::RESULTS[0][0] eq $obj1
+ && !defined($GOTM::RESULTS[0][1]) && !defined($GOTM::RESULTS[0][2])
+ && $GOTM::RESULTS[0][3] == 9
+ && defined($GOTM::RESULTS[1][0]) && $GOTM::RESULTS[1][0] eq $obj1
+ && defined($GOTM::RESULTS[1][1]) && $GOTM::RESULTS[1][1] eq $obj2
+ && !defined($GOTM::RESULTS[1][2])
+ && $GOTM::RESULTS[1][3] == 8
+ && defined($GOTM::RESULTS[2][0]) && $GOTM::RESULTS[2][0] eq $obj1
+ && defined($GOTM::RESULTS[2][1]) && $GOTM::RESULTS[2][1] eq $obj2
+ && defined($GOTM::RESULTS[2][2]) && $GOTM::RESULTS[2][2] eq $obj3
+ && $GOTM::RESULTS[2][3] == 7
+ && defined($GOTM::RESULTS[3][0]) && $GOTM::RESULTS[3][0] eq $obj1
+ && !defined($GOTM::RESULTS[3][1]) && !defined($GOTM::RESULTS[3][2])
+ && $GOTM::RESULTS[3][3] == 8
+ && defined($GOTM::RESULTS[4][0]) && $GOTM::RESULTS[4][0] eq $obj1
+ && defined($GOTM::RESULTS[4][1]) && $GOTM::RESULTS[4][1] eq $obj2
+ && !defined($GOTM::RESULTS[4][2])
+ && $GOTM::RESULTS[4][3] == 9
+ && defined($GOTM::RESULTS[5][0]) && $GOTM::RESULTS[5][0] eq $obj1
+ && defined($GOTM::RESULTS[5][1]) && $GOTM::RESULTS[5][1] eq $obj2
+ && defined($GOTM::RESULTS[5][2]) && $GOTM::RESULTS[5][2] eq $obj3
+ && $GOTM::RESULTS[5][3] == 10 );
+
+# Finally, we test arbitrary object actions. Turn on accessor creation so
+# we can eventually test this as well.
+$Games::Object::ActionMethod = 1;
+my $obj4 = GOTM->new(
+    -id		=> "Object4",
+    -on_bop	=> [ 
+	[ 'O:self', 'bop_func', 'O:other', 'bork', 'A:bup' ],
+	[ 'O:self', 'boop_func', 'O:other', 'berk', 'bonk' ],
+    ],
+    -on_bif	=> [
+	[ 'O:self', 'bif_func', 'O:other', 'baff', 'A:bix' ],
+	[ 'O:other', 'bif_func', 'O:self', 'boffo', 'borf', 'A:buff' ],
+    ],
+    -on_zot	=> [ 'O:self', 'zot_func', 'O:other', 'A:zog' ],
 );
-$obj2->new_attr(
-    -name	=> 'tree',
-    -type	=> 'string',
-    -value	=> 'oak',
+ok( defined($obj4) );
+$man->add($obj4);
+
+# Call actions using the action() method.
+GOTM->initialize();
+$obj4->action(
+    other => $obj3,
+    action => 'object:on_bop',
+    args => { bup => 'gronk' },
 );
-$obj2->new_attr(
-    -name	=> 'number',
-    -type	=> 'int',
-    -value	=> 2,
+$obj4->action(
+    other => $obj3,
+    action => 'object:on_bif',
+    args => { bix => 'grook', buff => 'gag' },
 );
-$obj3->new_attr(
-    -name	=> 'tree',
-    -type	=> 'string',
-    -value	=> 'horse chestnut',
+$obj4->action(
+    other => $obj3,
+    action => 'object:on_zot',
+    args => { zog => 'yes' },
 );
-$obj3->new_attr(
-    -name	=> 'number',
-    -type	=> 'int',
-    -value	=> 3,
-);
-eval('$obj1->bind_event($obj1->id(), "objectSaved", "event_object_save")');
-ok( $@ eq '' );
-eval('$obj3->bind_event($obj3->id(), "objectSaved", "event_object_save")');
-ok( $@ eq '' );
-eval('$obj1->bind_event($obj1->id(), "objectLoaded", "event_object_load")');
-ok( $@ eq '' );
-eval('$obj3->bind_event($obj3->id(), "objectLoaded", "event_object_load")');
-ok( $@ eq '' );
-eval('$obj1->bind_event($obj1->id(), "objectDestroyed", "event_object_destroy")');
-ok( $@ eq '' );
-eval('$obj3->bind_event($obj3->id(), "objectDestroyed", "event_object_destroy")');
-ok( $@ eq '' );
+ok( @GOTM::RESULTS == 5
+# Action on_bop, callback #1
+ && $GOTM::RESULTS[0][0] eq 'Object4'
+ && $GOTM::RESULTS[0][1] eq 'bop'
+ && $man->id($GOTM::RESULTS[0][2]) eq 'Object3'
+ && $GOTM::RESULTS[0][3] eq 'bork'
+ && $GOTM::RESULTS[0][4] eq 'gronk'
+# Action on_bop, callback #2
+ && $GOTM::RESULTS[1][0] eq 'Object4'
+ && $GOTM::RESULTS[1][1] eq 'boop'
+ && $man->id($GOTM::RESULTS[1][2]) eq 'Object3'
+ && $GOTM::RESULTS[1][3] eq 'berk'
+ && $GOTM::RESULTS[1][4] eq 'bonk'
+# Action on_bif, callback #1
+ && $GOTM::RESULTS[2][0] eq 'Object4'
+ && $GOTM::RESULTS[2][1] eq 'bif'
+ && $man->id($GOTM::RESULTS[2][2]) eq 'Object3'
+ && $GOTM::RESULTS[2][3] eq 'baff'
+ && $GOTM::RESULTS[2][4] eq 'grook'
+# Action on_bif, callback #2
+ && $GOTM::RESULTS[3][0] eq 'Object3'
+ && $GOTM::RESULTS[3][1] eq 'bif'
+ && $man->id($GOTM::RESULTS[3][2]) eq 'Object4'
+ && $GOTM::RESULTS[3][3] eq 'boffo'
+ && $GOTM::RESULTS[3][4] eq 'borf'
+ && $GOTM::RESULTS[3][5] eq 'gag'
+# Action on_zot
+ && $GOTM::RESULTS[4][0] eq 'Object4'
+ && $GOTM::RESULTS[4][1] eq 'zot'
+ && $man->id($GOTM::RESULTS[4][2]) eq 'Object3'
+ && $GOTM::RESULTS[4][3] eq 'yes' );
 
-# Save all objects to a file.
-my $file = IO::File->new();
-my $filename = "./testobj.save";
-$file->open(">$filename") or die "Cannot open file $filename\n";
-Process('save', -file => $file);
-$file->close();
+# Now do the same, but use the action methods. Use eval() in case something
+# went wrong and the methods were not defined.
+GOTM->initialize();
+eval('$obj4->on_bop($obj3, { bup => "gronk" } );');
+ok( $@ eq '' );
+print "# DEBUG: \$@ = $@" if ($@);
+eval('$obj4->on_bif($obj3, { bix => "grook", buff => "gag" } );');
+ok( $@ eq '' );
+print "# DEBUG: \$@ = $@" if ($@);
+eval('$obj4->on_zot($obj3, { zog => "yes" } );');
+ok( $@ eq '' );
+print "# DEBUG: \$@ = $@" if ($@);
+ok( @GOTM::RESULTS == 5
+# Action on_bop, callback #1
+ && $GOTM::RESULTS[0][0] eq 'Object4'
+ && $GOTM::RESULTS[0][1] eq 'bop'
+ && $man->id($GOTM::RESULTS[0][2]) eq 'Object3'
+ && $GOTM::RESULTS[0][3] eq 'bork'
+ && $GOTM::RESULTS[0][4] eq 'gronk'
+# Action on_bop, callback #2
+ && $GOTM::RESULTS[1][0] eq 'Object4'
+ && $GOTM::RESULTS[1][1] eq 'boop'
+ && $man->id($GOTM::RESULTS[1][2]) eq 'Object3'
+ && $GOTM::RESULTS[1][3] eq 'berk'
+ && $GOTM::RESULTS[1][4] eq 'bonk'
+# Action on_bif, callback #1
+ && $GOTM::RESULTS[2][0] eq 'Object4'
+ && $GOTM::RESULTS[2][1] eq 'bif'
+ && $man->id($GOTM::RESULTS[2][2]) eq 'Object3'
+ && $GOTM::RESULTS[2][3] eq 'baff'
+ && $GOTM::RESULTS[2][4] eq 'grook'
+# Action on_bif, callback #2
+ && $GOTM::RESULTS[3][0] eq 'Object3'
+ && $GOTM::RESULTS[3][1] eq 'bif'
+ && $man->id($GOTM::RESULTS[3][2]) eq 'Object4'
+ && $GOTM::RESULTS[3][3] eq 'boffo'
+ && $GOTM::RESULTS[3][4] eq 'borf'
+ && $GOTM::RESULTS[3][5] eq 'gag'
+# Action on_zot
+ && $GOTM::RESULTS[4][0] eq 'Object4'
+ && $GOTM::RESULTS[4][1] eq 'zot'
+ && $man->id($GOTM::RESULTS[4][2]) eq 'Object3'
+ && $GOTM::RESULTS[4][3] eq 'yes' );
+print "# DEBUG: RESULTS = " . scalar(@GOTM::RESULTS) . " (expected 5)\n"
+  if (@GOTM::RESULTS != 5);
 
-# Destroy them and load them back. On destroy, insure that the proper events
-# we called.
-$obj1->initialize();
-$obj1->priority(100);
-undef $obj1;
-undef $obj2;
-undef $obj3;
-Process('destroy', nudge_nudge => "Say no more");
-ok( @GOTestModule::RESULTS == 2
- && $GOTestModule::RESULTS[0] eq 'Object 1: Say no more'
- && $GOTestModule::RESULTS[1] eq 'Object 3: Say no more' );
-ok( TotalObjects() == 0 );
-GOTestModule->initialize();
-$file->open("<$filename") or die "Cannot open $filename for read\n";
-while (!$file->eof()) { eval('Games::Object->new(-file => $file)'); }
-$file->close();
-ok( TotalObjects() >= 3 );
+# Now do the same in the "active" sense, which means using the "verb" form
+# on other instead of self.
+GOTM->initialize();
+eval('$obj3->bop($obj4, { bup => "gronk" } );');
+ok( $@ eq '' );
+print "# DEBUG: \$@ = $@" if ($@);
+eval('$obj3->bif($obj4, { bix => "grook", buff => "gag" } );');
+ok( $@ eq '' );
+print "# DEBUG: \$@ = $@" if ($@);
+eval('$obj3->zot($obj4, { zog => "yes" } );');
+ok( $@ eq '' );
+print "# DEBUG: \$@ = $@" if ($@);
+ok( @GOTM::RESULTS == 5
+# Action on_bop, callback #1
+ && $GOTM::RESULTS[0][0] eq 'Object4'
+ && $GOTM::RESULTS[0][1] eq 'bop'
+ && $man->id($GOTM::RESULTS[0][2]) eq 'Object3'
+ && $GOTM::RESULTS[0][3] eq 'bork'
+ && $GOTM::RESULTS[0][4] eq 'gronk'
+# Action on_bop, callback #2
+ && $GOTM::RESULTS[1][0] eq 'Object4'
+ && $GOTM::RESULTS[1][1] eq 'boop'
+ && $man->id($GOTM::RESULTS[1][2]) eq 'Object3'
+ && $GOTM::RESULTS[1][3] eq 'berk'
+ && $GOTM::RESULTS[1][4] eq 'bonk'
+# Action on_bif, callback #1
+ && $GOTM::RESULTS[2][0] eq 'Object4'
+ && $GOTM::RESULTS[2][1] eq 'bif'
+ && $man->id($GOTM::RESULTS[2][2]) eq 'Object3'
+ && $GOTM::RESULTS[2][3] eq 'baff'
+ && $GOTM::RESULTS[2][4] eq 'grook'
+# Action on_bif, callback #2
+ && $GOTM::RESULTS[3][0] eq 'Object3'
+ && $GOTM::RESULTS[3][1] eq 'bif'
+ && $man->id($GOTM::RESULTS[3][2]) eq 'Object4'
+ && $GOTM::RESULTS[3][3] eq 'boffo'
+ && $GOTM::RESULTS[3][4] eq 'borf'
+ && $GOTM::RESULTS[3][5] eq 'gag'
+# Action on_zot
+ && $GOTM::RESULTS[4][0] eq 'Object4'
+ && $GOTM::RESULTS[4][1] eq 'zot'
+ && $man->id($GOTM::RESULTS[4][2]) eq 'Object3'
+ && $GOTM::RESULTS[4][3] eq 'yes' );
+print "# DEBUG: RESULTS = " . scalar(@GOTM::RESULTS) . " (expected 5)\n"
+  if (@GOTM::RESULTS != 5);
 
-# Check that the events fired.
-ok( @GOTestModule::RESULTS == 2 );
-ok( $GOTestModule::RESULTS[0] eq "Object 1: And now, number 1, the larch"
- && $GOTestModule::RESULTS[1] eq "Object 3: And now, number 3, the horse chestnut" );
-
-# And that the objects are intact.
-$obj1 = Find("Object 1");
-$obj2 = Find("Object 2");
-$obj3 = Find("Object 3");
-ok( $obj1 && $obj2 && $obj3 );
-ok( $obj1->attr('number') == 1 && $obj1->attr('tree') eq 'larch'
- && $obj2->attr('number') == 2 && $obj2->attr('tree') eq 'oak'
- && $obj3->attr('number') == 3 && $obj3->attr('tree') eq 'horse chestnut' );
-
-# Cleanup
-unlink($filename);
-unlink($pfile);
-
-exit (0);
+exit(0);

@@ -2,21 +2,10 @@
 
 # Load and save capabilities
 
-use strict;
-use Test;
-
-BEGIN { $| = 1; plan tests => 42 }
-
-# Write a small Perl module that we will use for load/save of object references
-use File::Basename;
-my $pdir = dirname($0);
-unshift @INC, $pdir;
-my $pfile = "$pdir/GOTestModule.pm";
-open PKG, ">$pfile" or die "Unable to open file $pfile\n";
-print PKG '
-package GOTestModule;
+package GOTM;
 
 use strict;
+use warnings;
 use Exporter;
 use vars qw(@ISA @EXPORT);
 
@@ -35,7 +24,7 @@ sub new
 	$obj;
 }
 
-sub find_it
+sub find
 {
 	shift if @_ > 1;
 	my $id = shift;
@@ -43,13 +32,12 @@ sub find_it
 	$index{id};
 }
 
-sub id_it { shift->{id}; }
+sub id { shift->{id}; }
 
-sub load_me
+sub load
 {
 	my $class = shift;
-	my %args = @_;
-	my $file = $args{file};
+	my $file = shift;
 	my $obj = {};
 
 	while (my $tag = <$file>) {
@@ -62,11 +50,10 @@ sub load_me
 	bless $obj, $class;
 }
 
-sub save_me
+sub save
 {
 	my $obj = shift;
-	my %args = @_;
-	my $file = $args{file};
+	my $file = shift;
 
 	foreach my $tag (keys %$obj) {
 	    print $file "$tag\n$obj->{$tag}\n";
@@ -76,15 +63,74 @@ sub save_me
 }
 
 1;
-';
-close PKG;
 
-use Games::Object qw(:attrflags RegisterClass TotalObjects);
+package GOTMSub;
+
+use strict;
+use warnings;
+use Exporter;
+use Games::Object;
+use vars qw(@EXPORT_OK @ISA);
+
+@ISA = qw(Games::Object Exporter);
+@EXPORT_OK = qw(@RESULTS);
+
+use vars qw(@RESULTS);
+
+sub initialize { @RESULTS = (); }
+
+sub new
+{
+	my $proto = shift;
+	my $class = ref($proto) || $proto;
+	my $obj = Games::Object->new(@_);
+
+	bless $obj, $class;
+	$obj;
+}
+
+# Test method just to make sure it REALLY got re-blessed properly ...
+
+sub answer { 42; }
+
+# Action callbacks, to prove that these can be reloaded.
+
+sub action_changed1
+{
+	my ($self, $old, $new) = @_;
+	push @RESULTS, [ $self->id(), 1, $old, $new ];
+	1;
+}
+
+sub action_changed2
+{
+	my ($self, $change) = @_;
+	push @RESULTS, [ $self->id(), 2, $change ];
+	1;
+}
+
+sub action_maxed
+{
+	my ($self, $excess) = @_;
+	push @RESULTS, [ $self->id(), 'max', $excess ];
+	1;
+}
+
+1;
+
+package main;
+
+use strict;
+use warnings;
+use Test;
+use Games::Object qw(:attrflags);
+use Games::Object::Manager;
 use IO::File;
 
+BEGIN { $| = 1; plan tests => 32 }
+
 # Create an object from the test module for later use.
-require GOTestModule;
-my $testobj = GOTestModule->new(
+my $testobj = GOTM->new(
     id	=> "ackthhbt",
     foo	=> 'blub',
     bar	=> 'blork',
@@ -93,7 +139,7 @@ my $testobj = GOTestModule->new(
 
 # Create an object with some attributes.
 my $filename = "./testobj.save";
-my $obj1 = Games::Object->new(-id => "SaveObject");
+my $obj1 = GOTMSub->new(-id => "SaveObject");
 $obj1->new_attr(
     -name	=> "TheAnswer",
     -type	=> "int",
@@ -141,6 +187,18 @@ $obj1->new_attr(
     },
 );
 $obj1->new_attr(
+    -name	=> "ActionData",
+    -type	=> 'int',
+    -value	=> 50,
+    -minimum	=> 0,
+    -maximum	=> 100,
+    -on_change	=> [
+	[ 'O:self', 'action_changed1', 'A:old', 'A:new' ],
+	[ 'O:self', 'action_changed2', 'A:change' ],
+    ],
+    -on_maximum	=> [ 'O:self', 'action_maxed', 'A:excess' ],
+);
+$obj1->new_attr(
     -name	=> "DisappearingData",
     -flags	=> ATTR_DONTSAVE,
     -type	=> "string",
@@ -153,58 +211,45 @@ $obj1->new_attr(
     -value	=> "Supercalifragilisticexpialadocious",
 );
 
-# Add an object reference. This first attempt should fail, as we have not
-# registered the class.
+# Add an object reference.
 eval('$obj1->new_attr(
     -name	=> "WeirdObject",
     -type	=> "object",
-    -class	=> "GOTestModule",
-    -store	=> "ref",
     -value	=> $testobj,
 )');
-ok( $@ =~ /unknown to the data module/ );
+ok( $@ eq '' );
+print "# \$@ = $@" if ($@ ne '');
 
-# Now register it and try again.
-eval('RegisterClass(
-    -class	=> "GOTestModule",
-    -id		=> "id_it",
-    -find	=> "find_it",
-    -load	=> "load_me",
-    -save	=> "save_me",
-)');
-ok( $@ eq '' );
-eval('$obj1->new_attr(
-    -name	=> "WeirdObject",
-    -type	=> "object",
-    -class	=> "GOTestModule",
-    -store	=> "ref",
-    -value	=> $testobj,
-)');
-ok( $@ eq '' );
+# Trigger the action callbacks on ActionData just to make sure they work.
+GOTMSub->initialize();
+$obj1->mod_attr(-name => "ActionData", -modify => 10);
+ok( @GOTMSub::RESULTS == 2
+ && $GOTMSub::RESULTS[0][0] eq 'SaveObject'
+ && $GOTMSub::RESULTS[0][1] == 1
+ && $GOTMSub::RESULTS[0][2] == 50
+ && $GOTMSub::RESULTS[0][3] == 60
+ && $GOTMSub::RESULTS[1][0] eq 'SaveObject'
+ && $GOTMSub::RESULTS[1][1] == 2
+ && $GOTMSub::RESULTS[1][2] == 10 );
 
 # Save it to a file.
 my $file1 = IO::File->new();
 $file1->open(">$filename") or die "Cannot open file $filename\n";
 eval('$obj1->save(-file => $file1)');
 ok( $@ eq '' );
+print "# \$@ = $@" if ($@ ne '');
 $file1->close();
 my $size = -s $filename;
 #print "# $filename is $size bytes\n";
 ok( $size != 0 );
 
-# Now reopen this file and try to create a new object from it. First let it
-# fail with a duplicate ID error and check that the error is what is
-# expected.
+# Now reopen this file and try to create a new object from it.
 my $file2 = IO::File->new();
 $file2->open("<$filename") or die "Cannot open file $filename\n";
 my $obj2;
-eval('$obj2 = Games::Object->new(-file => $file2)');
-ok( !defined($obj2) && $@ =~ /already exists/i );
-
-# Then try again but this time set a new ID so it will load.
-$file2->seek(0, 0);
-eval('$obj2 = Games::Object->new(-file => $file2, -id => "LoadObject")');
-ok( defined($obj2) && $obj2->id() eq 'LoadObject');
+eval('$obj2 = Games::Object->load(-file => $file2)');
+ok( defined($obj2) && $obj2->id() eq 'SaveObject');
+print "# \$@ = $@" if (!defined($obj2));
 $file2->close();
 
 # Check that the attributes are the same. The pure DONTSAVE attribute should
@@ -219,6 +264,7 @@ my $data = $obj2->attr('ComplexData');
 ok( $data->{foo} eq 'bar'
  && $data->{baz}[1] eq 'bop'
  && $data->{blork}{this} eq 'that' );
+ok( $obj2->attr('ActionData') == 60 );
 ok( !$obj2->attr_exists('DisappearingData') );
 ok( $obj2->attr_exists('MagicalData') && $obj2->attr('MagicalData') eq '' );
 
@@ -227,38 +273,66 @@ ok( $obj2->attr_exists('MagicalData') && $obj2->attr('MagicalData') eq '' );
 # references (to insure that a new object was indeed created and this is not
 # just the old reference) and to check the values of the object's keys.
 my $testobj2 = $obj2->attr('WeirdObject');
-ok( "$testobj2" ne "$testobj" && ref($testobj2) eq 'GOTestModule' );
+ok( "$testobj2" ne "$testobj" && ref($testobj2) eq 'GOTM' );
 ok( $testobj2->{id} eq "ackthhbt"
  && $testobj2->{foo} eq 'blub'
  && $testobj2->{bar} eq 'blork'
  && $testobj2->{zog} eq 'yes, no' );
 
-# Call process() on the first object. Make sure it updated but the new one
+# Call process() on the second object. Make sure it updated but the new one
 # did not, which should prove that they're distinct objects.
 $obj2->process();
 ok( $obj1->attr('PercentDone') == 0 );
 ok( $obj2->attr('PercentDone') == 0.5 );
 
+# Tweak the action callback as well, make sure it executes
+GOTMSub->initialize();
+$obj2->mod_attr(-name => "ActionData", -modify => 5);
+ok( @GOTMSub::RESULTS == 2
+ && $GOTMSub::RESULTS[0][0] eq 'SaveObject'
+ && $GOTMSub::RESULTS[0][1] == 1
+ && $GOTMSub::RESULTS[0][2] == 60
+ && $GOTMSub::RESULTS[0][3] == 65
+ && $GOTMSub::RESULTS[1][0] eq 'SaveObject'
+ && $GOTMSub::RESULTS[1][1] == 2
+ && $GOTMSub::RESULTS[1][2] == 5 );
+
 # Now attempt to load that file by its filename rather than opening the file
-# ourselves.
+# ourselves. We turn on the attribute accessor method feature to make sure
+# that.
 my $obj3;
-eval('$obj3 = Games::Object->new(-id => "LoadObject2", -filename =>$filename)');
-ok( defined($obj3) && $obj3->id() eq 'LoadObject2' );
+eval('$obj3 = Games::Object->load(-filename =>$filename)');
+ok( defined($obj3) && $obj3->id() eq 'SaveObject' );
 ok( $obj3->attr('TheAnswer') == 42 );
 ok( $obj3->attr('TheQuestion') eq "Unknown, computation did not complete." );
 ok( $obj3->attr('HarrysHouse') eq 'Gryffindor' );
 ok( $obj3->attr('EnterpriseCommander') eq 'Constitution class vessel' );
 ok( $obj3->raw_attr('EnterpriseCommander') eq 'Kirk' );
 ok( $obj3->attr('PercentDone') == 0 );
+ok( $obj3->attr('ActionData') == 60 );
 my $testobj3 = $obj3->attr('WeirdObject');
-ok( "$testobj3" ne "$testobj" && ref($testobj3) eq 'GOTestModule' );
+ok( "$testobj3" ne "$testobj" && ref($testobj3) eq 'GOTM' );
 ok( $testobj3->{id} eq "ackthhbt"
  && $testobj3->{foo} eq 'blub'
  && $testobj3->{bar} eq 'blork'
  && $testobj3->{zog} eq 'yes, no' );
 
+# Tweak the action callback as well, make sure it executes
+GOTMSub->initialize();
+$obj3->mod_attr(-name => "ActionData", -modify => 5);
+ok( @GOTMSub::RESULTS == 2
+ && $GOTMSub::RESULTS[0][0] eq 'SaveObject'
+ && $GOTMSub::RESULTS[0][1] == 1
+ && $GOTMSub::RESULTS[0][2] == 60
+ && $GOTMSub::RESULTS[0][3] == 65
+ && $GOTMSub::RESULTS[1][0] eq 'SaveObject'
+ && $GOTMSub::RESULTS[1][1] == 2
+ && $GOTMSub::RESULTS[1][2] == 5 );
+
 # Finally, we need to test the ability to load multiple objects from the
-# same file. First produce a file containing several objects in it.
+# same file. Note that we're testing exclusively the individual object load/save
+# functionality rather than manager functionality, which is covered in another
+# test. First produce a file containing several objects in it.
 unlink $filename;
 $filename = "./testobjs.save";
 my $file3 = IO::File->new();
@@ -306,7 +380,7 @@ while ($count) {
     my $spec = shift @pspecs;
     my $obj;
     my $pnum = 10 - $count;
-    eval('$obj = Games::Object->new(-file =>$file4, -id => "NewPlanet" . $pnum)');
+    eval('$obj = Games::Object->load(-file =>$file4, -id => "NewPlanet" . $pnum)');
     if ($@) {
 	print "# Load of $pnum failed\n";
 	last;
@@ -327,127 +401,6 @@ while ($count) {
 }
 $file4->close();
 ok( $count == 0 );
-unlink $filename;
-unlink $pfile;
-
-# Now for the final test, we try saving an object that's been subclassed
-# and make sure that it gets re-blessed into the subclass on load.
-
-# First, create the module.
-my $subpfile = "$pdir/GOTestModuleSubclass.pm";
-open PKG, ">$subpfile" or die "Unable to open file $subpfile\n";
-print PKG '
-package GOTestModuleSubclass;
-
-use strict;
-use Exporter;
-use Games::Object;
-use vars qw(@ISA);
-
-@ISA = qw(Games::Object Exporter);
-
-sub new
-{
-	my $proto = shift;
-	my $class = ref($proto) || $proto;
-	my $obj = Games::Object->new(@_);
-
-	bless $obj, $class;
-	$obj;
-}
-
-# Test method just to make sure it REALLY got re-blessed properly ...
-
-sub answer { 42; }
-
-1;
-';
-close PKG;
-
-# Now create an object
-require GOTestModuleSubclass;
-my $subobj = GOTestModuleSubclass->new(-id => "SubclassTestObject");
-ok( ref($subobj) eq 'GOTestModuleSubclass' );
-
-# Save it.
-my $subfile_out = IO::File->new();
-$subfile_out->open(">$filename") or die "Cannot open file $filename\n";
-eval('$subobj->save(-file => $subfile_out)');
-ok( $@ eq '' );
-$subfile_out->close();
-
-# Load it back in
-my $subobj2;
-eval('$subobj2 = Games::Object->new(
-    -id => "SubclassTestObject2",
-    -filename => $filename
-)');
-ok( $@ eq '' );
-ok( ref($subobj2) eq 'GOTestModuleSubclass' );
-my $ans;
-eval('$ans = $subobj2->answer()');
-ok( $ans == 42 );
-
-# (Added v0.02) One final part of this test: We need to make sure that
-# attributes with references to Games::Object-subclassed objects will save
-# and load correctly. First create two objects.
-my $refobj1 = GOTestModuleSubclass->new(-id => "RefTestObject1");
-my $refobj2 = GOTestModuleSubclass->new(-id => "RefTestObject2");
-
-# Now add attributes that have a reference to each other.
-eval('$refobj1->new_attr(
-    -name	=> "ObjectRef",
-    -type	=> "any",
-    -value	=> $refobj2
-)');
-ok( $@ eq '' );
-eval('$refobj2->new_attr(
-    -name	=> "ObjectRef",
-    -type	=> "any",
-    -value	=> $refobj1
-)');
-ok( $@ eq '' );
-
-# Add some other arbitrary attributes.
-$refobj1->new_attr(-name => "ArbitraryAttribute",
-		   -type => "int",
-		   -value => 1);
-$refobj2->new_attr(-name => "ArbitraryAttribute",
-		   -type => "int",
-		   -value => 2);
-
-# Save the number of objects that are present.
-my $ot_before = TotalObjects();
-
-# Save it to a file.
-open(REFFILE_OUT, ">$filename") or die "Cannot open file $filename";
-eval('$refobj1->save(-file => \*REFFILE_OUT)');
-ok( $@ eq '' );
-eval('$refobj2->save(-file => \*REFFILE_OUT)');
-ok( $@ eq '' );
-close(REFFILE_OUT);
-
-# Load them back.
-open(REFFILE_IN, "<$filename") or die "Cannot open file $filename";
-my ($new_refobj1, $new_refobj2);
-eval('$new_refobj1 = Games::Object->new(
-	-file => \*REFFILE_IN,
-	-id => "NewRefTestObject1")');
-ok( $@ eq '' );
-eval('$new_refobj2 = Games::Object->new(
-	-file => \*REFFILE_IN,
-	-id => "NewRefTestObject2")');
-ok( $@ eq '' );
-close REFFILE_IN;
-
-# Make sure we gained EXACTLY two objects. If this is not the case, then
-# the PLACEHOLDER functionality is broken and we're getting duplicate objects.
-my $ot_after = TotalObjects();
-ok( $ot_after == ($ot_before + 2) );
-#print "# objects before = $ot_before objects after = $ot_after\n";
-
-# Done.
-unlink $subpfile;
 unlink $filename;
 
 exit (0);

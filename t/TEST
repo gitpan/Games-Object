@@ -12,4 +12,6 @@ runtests(
     './process.t',
     './priority.t',
     './loadsave.t',
+    './overload.t',
+    './relate.t',
 );

@@ -1,6 +1,60 @@
 Revision history for Perl extension Games::Object.
 
-0.05  Mon Nov 25 18:18:17 MST 2002
+0.10  Tue Jul 29 2003
+	WARNING: This version is a redesign of several key components of the
+	system. This version is most likely incompatible with all older
+	versions.
+
+	Instead of using Games::Object as the object manager as well as the
+	object structure, a new Games::Object::Manager module has been added.
+	A manager acts as a container for objects, thus stuff that used to
+	be functions (like Find(), Process(), etc) are now methods on the
+	manager. Thus you can manage several lists of self-contained objects.
+	This is much more in keeping with an overall OO approach.
+
+	The event system was ripped out and rewritten from scratch. The
+	new version is much more integrated into the objects, so it appears
+	more seamless. This has the nice side-effect of getting rid of the
+	GlobalObject kludginess. The new code is actually smaller than the
+	original.
+
+	With the introduction of object managers, I have been able to provide
+	a framework for defining and tracking object relationships. Object
+	inheritance is now simply a predefined object relationship referenced
+	by the Games::Object module.
+
+	Ripped out the class registration code for non-Games::Object derived
+	object references. Instead, I simply require that you have a load() and
+	save() method to handle file IO (id and find methods no longer needed).
+	This is more in keeping with OO programming methodology.
+
+	A new flag provided to have simplified accessor methods autocreated
+	for you when adding attributes (and yes, I considered using AUTOLOAD,
+	but I don't much care for it because of the inheritance nightmare,
+	and to quote the Perl Cookbook: "AUTOLOAD eventually begins to feel
+	like a kludge piled on a hack piled on a workaround")
+
+	User-defined object flags are created on objects on the fly as needed,
+	much like attributes, rather than requiring the user to predefine
+	them globally.
+
+	You can now choose the starting ID for auto-generated object IDs (object
+	IDs now maintained by the object manager module).
+
+	Fixed bug where -w on Perl 5.8.0 gave "v-string ... non-portable"
+	warning.
+
+	Added overloaded operators so objects can be compared more easily.
+
+	You can now specify an arbitrary filter function when processing all
+	objects in a manager (i.e. the functionality handled by Process()
+	in previous versions).
+
+	Adjusted some tests to deal with Perl 5.8.0 weirdness causing false
+	test failures on some platforms (this one a suspected mathematical
+	precision problem).
+
+0.05  Mon Nov 25 2002
 	Added a feature that allows a more deterministic way of specifying
 	processing order of objects with the same priority.
 
@@ -21,7 +75,7 @@ Revision history for Perl extension Games::Object.
 
 	Made some corrections to examples in the POD docs.
 
-0.04  Sat Jun  8 12:46:16 MDT 2002
+0.04  Sat Jun  8 2002
 	Much of the changes here are to support the upcoming release of the
 	Games::TileMap module.
 
@@ -43,7 +97,7 @@ Revision history for Perl extension Games::Object.
 
 	Documented the attribute flags and added flag ATTR_AUTOCREATE.
 
-0.03  Sat Apr  6 06:42:00 MST 2002
+0.03  Sat Apr  6 2002
 	Completely reworked the event handling mechanism to allow events
 	to be targeted for specific objects.
 
@@ -72,7 +126,7 @@ Revision history for Perl extension Games::Object.
 	Put the perldoc stuff into a separate file, as it was growing
 	as large as the code itself.
 
-0.02  Sun Feb 24 09:43:46 MST 2002
+0.02  Sun Feb 24 2002
 	The docs stated that a reference to an object subclassed to
 	Games::Object assigned to an attribute of 'any' would save/load
 	the reference correctly. Now it really does.
@@ -92,6 +146,6 @@ Revision history for Perl extension Games::Object.
 	Added some missing tests to loadsave.t (object references and
 	PLACEHOLDER functionality)
 
-0.01  Sun Jan 20 16:33:48 MST 2002
+0.01  Sun Jan 20 2002
 	Initial alpha release. Probably stable, but lacking in some polish
 	and some functionality. Reasonably comprehensive docs, though.

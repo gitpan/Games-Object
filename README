@@ -1,17 +1,17 @@
-Games/Object version 0.05
+Games/Object version 0.10
 =========================
 
-IMPORTANT NOTE TO USERS OF VERSIONS BEFORE 0.04
+IMPORTANT NOTE TO USERS OF VERSIONS 0.05 AND PREVIOUS
 
-This module now requires Perl 5.6.0. I thought initially that I would have
-an environment in which to test it in 5.005, but this will not be the case, and
-I do not wish to install it on my home machine. In addition, the upcoming
-release of Games::TileMap (really, it WILL be released -- I almost have enough
-tuits collected), which is dependent on this module, will require 5.6.0 for
-other reasons, and I wanted to make everything consistent.
+The latest version of the module makes some major redesigns to the APIs
+and internal structure. Your code will have to change with 0.10. The redesign
+was extensive enough that I could not preserve backward compatibility. These
+changes are based on concrete feedback from other users either attempting to
+use the module or expressing an interest in it.
 
-Anyway, 5.6.0 has been out there for a long time. It's time to let go of
-the past :)
+The new design should be more stable than the previous and should not undergo
+any further paradigm shifts. The module it still alpha, but hopefully will
+progress to beta by version 0.20.
 
 INTRODUCTION
 
@@ -53,24 +53,31 @@ The functionality of this module can be divided into the following sections:
   Flags
 
     Arbitrary, used-defined flags can be placed on objects. These flags can
-    be made such that:
-
-    - They are automatically set on objects when created.
-
-    - User-defined code is invoked when a flag changes value.
+    be made such that user-defined code is invoked when a flag changes value.
 
   Load/Save
 
     Object data can be saved to an arbitrary file and then read back in later
     to produce an exact copy of the object. This essentially provides the bulk
-    of save/load game functionality.
+    of save/load game functionality. You can even set up customized code to
+    execute each time an object loads/saves to read/write additional data.
 
   Events
 
     The user can define arbitrary code to execute when modifications are
-    made to object. Events are hierarchical, in that you can have events
-    that trigger only on a specific modification, en entire class of
-    modifications, or all modifications.
+    made to objects or their attributes. Some examples of these are mentioned
+    above. Events on attributes share the same inheritance as attribute values,
+    which means you can define a common event trigger on a master object and
+    have lots of other objects inherit from it and use the event as if it were
+    defined on the individual objects.
+
+  Object Management
+
+    As part of the redesign with version 0.10, management of the overall list of
+    objects is now implemented by a separate manager module, allowing you to
+    maintain many independent groups of objects. This also makes it far easier
+    for the user to extend the object management functionality, merely by
+    subclassing the manager class.
 
 
 CHANGES FROM LAST VERSION
@@ -95,19 +102,19 @@ DEPENDENCIES
 
 Perl 5.6.0 or better is required. Perl 5.6.1 is recommended.
 
-There are currently no dependencies on other modules other than standard
-Perl core modules.
+You will also need IO::String 1.02 or better (older versions will NOT work),
+available from CPAN.
 
 
 BUG REPORTS
 
-This is an ALPHA release. Please send all bug reports to p.stewart@attbi.com.
+This is an ALPHA release. Please send all bug reports to p.stewart@comcast.net.
 Suggestions at future functionality are also welcome.
 
 
 COPYRIGHT AND LICENCE
 
-Copyright (C) 2002 Peter J. Stewart, all rights reserved.
+Copyright (C) 2002,2003 Peter J. Stewart, all rights reserved.
 
 This module is distributable and modifiable under the
 GPL and the Artistic Licenses.
