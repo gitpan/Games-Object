@@ -10,14 +10,14 @@ use IO::File;
 
 use vars qw($VERSION @EXPORT_OK %EXPORT_TAGS @ISA);
 
-$VERSION = "0.01";
+$VERSION = "0.02";
 @ISA = qw(Exporter);
-@EXPORT_OK = qw(CreateFlag ModifyFlag Find RegisterEvent Process
+@EXPORT_OK = qw(TotalObjects CreateFlag ModifyFlag Find RegisterEvent Process
 		LockAttrMods UnlockAttrMods SetProcessList
 		FetchParams RegisterClass IsClassRegistered
 		ATTR_STATIC ATTR_DONTSAVE);
 %EXPORT_TAGS = (
-    functions		=> [qw(Flag Find RegisterEvent Process
+    functions		=> [qw(TotalObjects Flag Find RegisterEvent Process
 			       LockAttrMods UnlockAttrMods SetProcessList
 			       FetchParams RegisterClass IsClassRegistered)],
     objflags		=> [qw(OBJ_CHANGED OBJ_AUTOALLOCATED
@@ -169,6 +169,9 @@ sub _SaveData
 	    print $file "O $ref\n";
 	    my $method = $class_info{$ref}{save};
 	    $data->$method(file => $file);
+	} elsif ($ref && UNIVERSAL::isa($data, 'Games::Object')) {
+	    # Save the ID of the object.
+	    print $file "G " . $data->id() . "\n";
 	} else {
 	    # SOL
 	    croak("Cannot save reference to $ref object");
@@ -237,6 +240,16 @@ sub _LoadData
 		croak "Cannot load object of class '$val' as it has " .
 			"not been registered";
 	    }
+	} elsif ($tag eq 'G') {
+	    # A Games::Object-subclassed object
+	    my $obj = Find($val);
+	    if (!$obj) {
+		# This object may not have been loaded yet. So we create a
+		# placeholder for it.
+		$obj = Games::Object->new(-id => $val);
+		$obj->_set(OBJ_PLACEHOLDER);
+	    }
+	    $obj;
 	} else {
 	    # Anything else is unrecognized.
 	    croak("Unknown tag '$tag' in file, file may be corrupted");
@@ -355,10 +368,18 @@ sub FetchParams
 
 	    } elsif ($rstr eq 'file') {
 
-		# Must be reference to an IO::File or FileHandler object
-		croak("Param '$name' must be a file (IO::File or " .
-			"FileHandler object acceptable)")
-		  if (ref($res->{$oname}) !~ /^(IO::File|FileHandler)$/);
+		# Must be reference to an IO::File or FileHandle object
+		croak("Param '$name' must be a file (IO::File/" .
+			"FileHandler object or GLOB reference acceptable)")
+		  if (ref($res->{$oname}) !~ /^(IO::File|FileHandle|GLOB)$/);
+
+	    } elsif ($rstr eq 'readable_filename' ) {
+
+		# Must be the name of a file that exists and is readable.
+		croak("Filename '$res->{$oname}' does not exist")
+		    if (! -f $res->{$oname});
+		croak("Filename '$res->{$oname}' is not readable")
+		    if (! -r $res->{$oname});
 
 	    } elsif ($rstr eq 'object') {
 
@@ -383,6 +404,10 @@ sub FetchParams
 
 	$res;
 }
+
+# Return the number of objects in the universe.
+
+sub TotalObjects { scalar keys %obj_index; }
 
 # Register a class that this module is to know about for load/save
 
@@ -1221,6 +1246,33 @@ sub new_attr
 	$obj;
 }
 
+# Delete an attribute.
+
+sub del_attr
+{
+	my $obj = shift;
+	my ($aname) = @_;
+
+	# Do nothing if the attribute does not exist.
+	return 0 if (!defined($obj->{attr}{$aname}));
+
+	# Delete the attribute.
+	delete $obj->{attr}{$aname};
+
+	# Done.
+	1;
+}
+
+# Check to see if an attribute exists.
+
+sub attr_exists
+{
+	my $obj = shift;
+	my ($aname) = @_;
+
+	defined($obj->{attr}{$aname});
+}
+
 # Fetch value or properties of an attribute
 
 sub attr
@@ -1229,8 +1281,7 @@ sub attr
 	$prop = 'value' if (!defined($prop));
 
 	# Check to see if attribute exists.
-	croak("Attribute '$aname' does not exist on '$obj->{id}'")
-	  if (!defined($obj->{attr}{$aname}));
+	return undef if (!defined($obj->{attr}{$aname}));
 
 	# Check to see if the property exists.
 	my $attr = $obj->{attr}{$aname};
@@ -1277,8 +1328,7 @@ sub raw_attr
 	$prop = 'value' if (!defined($prop));
 
 	# Check to see if attribute exists.
-	croak("Attribute '$aname' does not exist on '$obj->{id}'")
-	  if (!defined($obj->{attr}{$aname}));
+	return undef if (!defined($obj->{attr}{$aname}));
 
 	# Check to see if the property exists.
 	my $attr = $obj->{attr}{$aname};
@@ -1940,9 +1990,8 @@ open file to the constructor:
 
     $obj = new Games::Object(-file => \*INFILE);
 
-The argument to I<-file> can be any sort of file reference, from a GLOB
-reference to an IO::File object reference. So long as it has been opened for
-reading already.
+The argument to I<-file> can be a simple GLOB reference or an IO::File object
+or FileHandle object, so long as it has been opened for reading already.
 
 The constructor will use as the ID of the object the ID that was stored in the
 file when it was saved. This means that this ID cannot already exist or it is
@@ -2486,6 +2535,18 @@ internal value reaches 1.5, now retrieving the value will return 2.
 
 =back
 
+=head2 Attribute Existence
+
+You can check to see if an attribute exists with C<attr_exists()>:
+
+    if ($obj->attr_exists('encounters')) {
+	$obj->mod_attr(-name => 'encounters', -modify => 1);
+    } else {
+	$obj->new_attr(-name => 'encounters',
+		       -type => 'int',
+		       -value => 1);
+    }
+
 =head2 Fetching Attributes
 
 An attribute's value is fetched with the C<attr()> method:
@@ -2535,6 +2596,8 @@ of this type):
 
     $cskill = $obj->attr('combat_skill_levels');
     $cskill->{melee} ++;
+
+In all cases, if the attribute specified does not exist, undef is returned.
 
 =head2 Modifying Attributes
 
@@ -2738,6 +2801,15 @@ cannot be "remembered". The general format is:
 
 where PROPERTY is one of "minimum", "maximum", "tend_to_rate", "on_fractional",
 "track_fractional", "out_of_bounds".
+
+=head2 Deleting Attributes
+
+To delete an attribute, use the C<del_attr()> method:
+
+    $obj->del_attr('xzyzzy');
+
+This removes the attribute immediately. Any persistent modifiers on this
+attribute are removed at the same time.
 
 =head1 Events
 
@@ -3259,6 +3331,7 @@ least the suggestion of how it might look.
 
 This is currently an alpha version of this module. Interfaces may and
 probably will change in the immediate future as I improve on the design.
+The interface to event handling WILL change, I can guarantee that much.
 
 If you look at the code, you will find some extra functionality that is not
 explained in the documentation. This functionality is NOT to be considered
@@ -3269,21 +3342,29 @@ functionality fully working and documented in the beta.
 
 =head1 BUGS
 
-Oh, plenty, I'm sure.
+Cancelling a persistent modifier that attempted to modify a value past its
+min or max and only had part of the modifier applied will remove the entire
+modifier. For example, if a persistent modifier of 10 is applied to an attribute
+at 95, and the attribute is set to option use_up with a max of 100, the
+attribute is raised only to 100. Yet when the modifier is cancelled, the
+attribute is lowered to 90. This is probably not what you want.
+
+There is a design flaw in the C<process()> logic. See L<"Timing Issues"> for
+more details.
+
+There are probably lots of other bugs, since this IS an alpha release, but
+these are the only one known at this time.
 
 =head1 TO DO
 
-Attributes currently cannot be deleted once added to an object.
+I will be investigating replacing the bulk of the load() and save() code with
+hooks into the Storable module. I had not known about this module until after
+I had coded much of Games::Object. Look for this possibly in the beta version.
 
 There needs to be an option to mod_attr() that forces a persistent mod to
 take effect immediately.
 
 Cloning an object would be useful functionality to have.
-
-Modifier cancel functionality needs improvement. There's no provision to check
-for the case of where the attribute was already at max/min before it was
-applied; in such a case, rescinding the modifier should rescind only what
-was applied, if any.
 
 Need to expand event functionality. I would like to model it like Tk's
 bind() method. For example, I'd like to be able to register an event
@@ -3298,9 +3379,13 @@ added. What might be nice would be a way to choose a truly random order
 for processing.
 
 There needs to be a way to "encode" the game save data. Right now its in
-clear ASCII, which would make it easy to cheat.
+clear ASCII, which would make it easy to cheat. Using Storable might mitigate
+this somewhat.
 
 A form of "undo" functionality would be WAY cool. I have something like this
 in another (but non-CPAN) module. I just need to port it over.
+
+Adding a filter to Process() (i.e. have it process only those objects for
+which some arbitrary expression evaluates to true) would be useful.
 
 =cut

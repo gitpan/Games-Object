@@ -5,7 +5,7 @@
 use strict;
 use Test;
 
-BEGIN { $| = 1; plan tests => 33 }
+BEGIN { $| = 1; plan tests => 40 }
 
 # Write a small Perl module that we will use for load/save of object references
 use File::Basename;
@@ -79,7 +79,7 @@ sub save_me
 ';
 close PKG;
 
-use Games::Object qw(RegisterClass);
+use Games::Object qw(RegisterClass TotalObjects);
 use IO::File;
 
 # Create an object from the test module for later use.
@@ -372,6 +372,64 @@ ok( ref($subobj2) eq 'GOTestModuleSubclass' );
 my $ans;
 eval('$ans = $subobj2->answer()');
 ok( $ans == 42 );
+
+# (Added v0.02) One final part of this test: We need to make sure that
+# attributes with references to Games::Object-subclassed objects will save
+# and load correctly. First create two objects.
+my $refobj1 = GOTestModuleSubclass->new(-id => "RefTestObject1");
+my $refobj2 = GOTestModuleSubclass->new(-id => "RefTestObject2");
+
+# Now add attributes that have a reference to each other.
+eval('$refobj1->new_attr(
+    -name	=> "ObjectRef",
+    -type	=> "any",
+    -value	=> $refobj2
+)');
+ok( $@ eq '' );
+eval('$refobj2->new_attr(
+    -name	=> "ObjectRef",
+    -type	=> "any",
+    -value	=> $refobj1
+)');
+ok( $@ eq '' );
+
+# Add some other arbitrary attributes.
+$refobj1->new_attr(-name => "ArbitraryAttribute",
+		   -type => "int",
+		   -value => 1);
+$refobj2->new_attr(-name => "ArbitraryAttribute",
+		   -type => "int",
+		   -value => 2);
+
+# Save the number of objects that are present.
+my $ot_before = TotalObjects();
+
+# Save it to a file.
+open(REFFILE_OUT, ">$filename") or die "Cannot open file $filename";
+eval('$refobj1->save(-file => \*REFFILE_OUT)');
+ok( $@ eq '' );
+eval('$refobj2->save(-file => \*REFFILE_OUT)');
+ok( $@ eq '' );
+close(REFFILE_OUT);
+
+# Load them back.
+open(REFFILE_IN, "<$filename") or die "Cannot open file $filename";
+my ($new_refobj1, $new_refobj2);
+eval('$new_refobj1 = Games::Object->new(
+	-file => \*REFFILE_IN,
+	-id => "NewRefTestObject1")');
+ok( $@ eq '' );
+eval('$new_refobj2 = Games::Object->new(
+	-file => \*REFFILE_IN,
+	-id => "NewRefTestObject2")');
+ok( $@ eq '' );
+close REFFILE_IN;
+
+# Make sure we gained EXACTLY two objects. If this is not the case, then
+# the PLACEHOLDER functionality is broken and we're getting duplicate objects.
+my $ot_after = TotalObjects();
+ok( $ot_after == ($ot_before + 2) );
+print "# objects before = $ot_before objects after = $ot_after\n";
 
 # Done.
 unlink $subpfile;

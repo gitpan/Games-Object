@@ -1,4 +1,4 @@
-Games/Object version 0.01
+Games/Object version 0.02
 =========================
 
 INTRODUCTION
@@ -54,6 +54,11 @@ The functionality of this module can be divided into the following sections:
     of save/load game functionality.
 
 
+CHANGES FROM LAST VERSION
+
+See the Changes file for details.
+
+
 INSTALLATION
 
 This is packaged as a standard CPAN module, thus you ought to be able to
@@ -86,4 +91,4 @@ COPYRIGHT AND LICENCE
 Copyright (C) 2002 Peter J. Stewart, all rights reserved.
 
 This module is distributable and modifiable under the
-GPL and the Artistic License.
+GPL and the Artistic Licenses.

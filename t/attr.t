@@ -5,7 +5,7 @@
 use strict;
 use Test;
 
-BEGIN { $| = 1; plan tests => 47 }
+BEGIN { $| = 1; plan tests => 50 }
 
 use Games::Object;
 
@@ -216,5 +216,10 @@ eval('$obj->mod_attr(
 )');
 $res = $obj->attr("ObjectRef2");
 ok( defined($res) && !ref($res) && $res eq 'SampleObject1' );
+
+# Perform some basic attribute existence tests.
+ok( !defined($obj->attr("ThisDoesNotExist")) );
+ok( !$obj->attr_exists("ThisDoesNotExist") );
+ok( $obj->attr_exists("ObjectRef2") );
 
 exit (0);
