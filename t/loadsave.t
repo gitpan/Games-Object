@@ -5,7 +5,7 @@
 use strict;
 use Test;
 
-BEGIN { $| = 1; plan tests => 40 }
+BEGIN { $| = 1; plan tests => 42 }
 
 # Write a small Perl module that we will use for load/save of object references
 use File::Basename;
@@ -79,7 +79,7 @@ sub save_me
 ';
 close PKG;
 
-use Games::Object qw(RegisterClass TotalObjects);
+use Games::Object qw(:attrflags RegisterClass TotalObjects);
 use IO::File;
 
 # Create an object from the test module for later use.
@@ -140,6 +140,18 @@ $obj1->new_attr(
 	}
     },
 );
+$obj1->new_attr(
+    -name	=> "DisappearingData",
+    -flags	=> ATTR_DONTSAVE,
+    -type	=> "string",
+    -value	=> "How not to be seen",
+);
+$obj1->new_attr(
+    -name	=> "MagicalData",
+    -flags	=> ATTR_AUTOCREATE | ATTR_DONTSAVE,
+    -type	=> "string",
+    -value	=> "Supercalifragilisticexpialadocious",
+);
 
 # Add an object reference. This first attempt should fail, as we have not
 # registered the class.
@@ -177,7 +189,7 @@ eval('$obj1->save(-file => $file1)');
 ok( $@ eq '' );
 $file1->close();
 my $size = -s $filename;
-print "# $filename is $size bytes\n";
+#print "# $filename is $size bytes\n";
 ok( $size != 0 );
 
 # Now reopen this file and try to create a new object from it. First let it
@@ -195,7 +207,8 @@ eval('$obj2 = Games::Object->new(-file => $file2, -id => "LoadObject")');
 ok( defined($obj2) && $obj2->id() eq 'LoadObject');
 $file2->close();
 
-# Check that the attributes are the same.
+# Check that the attributes are the same. The pure DONTSAVE attribute should
+# NOT be there, while the DONTSAVE + AUTOCREATE should be there but empty.
 ok( $obj2->attr('TheAnswer') == 42 );
 ok( $obj2->attr('TheQuestion') eq "Unknown, computation did not complete." );
 ok( $obj2->attr('HarrysHouse') eq 'Gryffindor' );
@@ -206,6 +219,8 @@ my $data = $obj2->attr('ComplexData');
 ok( $data->{foo} eq 'bar'
  && $data->{baz}[1] eq 'bop'
  && $data->{blork}{this} eq 'that' );
+ok( !$obj2->attr_exists('DisappearingData') );
+ok( $obj2->attr_exists('MagicalData') && $obj2->attr('MagicalData') eq '' );
 
 # Check that the object reference was loaded and contains the right data.
 # We cheat a little here in the interests of testing: we compare stringified
@@ -282,7 +297,7 @@ foreach my $spec (@pspecs) {
 }
 $file3->close();
 $size = -s $filename;
-print "# $filename is $size bytes\n";
+#print "# $filename is $size bytes\n";
 
 # Now reopen the file and attempt to read them back in, validating as we go.
 my $file4 = IO::File->new();
@@ -429,7 +444,7 @@ close REFFILE_IN;
 # the PLACEHOLDER functionality is broken and we're getting duplicate objects.
 my $ot_after = TotalObjects();
 ok( $ot_after == ($ot_before + 2) );
-print "# objects before = $ot_before objects after = $ot_after\n";
+#print "# objects before = $ot_before objects after = $ot_after\n";
 
 # Done.
 unlink $subpfile;

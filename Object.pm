@@ -1,5 +1,5 @@
 package Games::Object;
-require 5.005;
+require 5.6.0;
 
 use strict;
 use Exporter;
@@ -10,25 +10,26 @@ use IO::File;
 
 use vars qw($VERSION @EXPORT_OK %EXPORT_TAGS @ISA);
 
-$VERSION = "0.03";
+$VERSION = "0.04";
 @ISA = qw(Exporter);
-@EXPORT_OK = qw(TotalObjects CreateFlag ModifyFlag Find RegisterEvent Process
+@EXPORT_OK = qw(TotalObjects CreateFlag ModifyFlag Find Id RegisterEvent Process
 		SetProcessList FetchParams RegisterClass IsClassRegistered
 		OBJ_CHANGED OBJ_AUTOALLOCATED OBJ_PLACEHOLDER OBJ_DESTROYED
-		ATTR_STATIC ATTR_DONTSAVE EVENT_NULL_CALLBACK);
+		ATTR_STATIC ATTR_DONTSAVE ATTR_AUTOCREATE EVENT_NULL_CALLBACK);
 %EXPORT_TAGS = (
-    functions		=> [qw(TotalObjects Flag Find RegisterEvent Process
+    functions		=> [qw(TotalObjects Flag Find Id RegisterEvent Process
 			       SetProcessList FetchParams
 			       RegisterClass IsClassRegistered)],
     objflags		=> [qw(OBJ_CHANGED OBJ_AUTOALLOCATED
 			       OBJ_PLACEHOLDER OBJ_DESTROYED)],
-    attrflags		=> [qw(ATTR_STATIC ATTR_DONTSAVE)],
+    attrflags		=> [qw(ATTR_STATIC ATTR_DONTSAVE ATTR_AUTOCREATE)],
     all			=> [qw(:functions :objflags :attrflags)],
 );
 
 # Define some attribute flags.
 use constant ATTR_STATIC	=> 0x00000001;
 use constant ATTR_DONTSAVE	=> 0x00000002;
+use constant ATTR_AUTOCREATE	=> 0x00000004;
 
 # Define object flags (internal)
 use constant OBJ_CHANGED        => 0x00000001;
@@ -192,7 +193,7 @@ sub _LoadData
 	# Check for something we recognize.
 	chomp $line;
 	my $tag = substr($line, 0, 1);
-	my $val = substr($line, 2);
+	my $val = substr($line, 2) if ($tag ne 'U'); # Avoid substr warning
 	if ($tag eq 'U') {
 	    # Undef.
 	    undef;
@@ -491,14 +492,47 @@ sub ModifyFlag
 	$user_flag{$args{name}}{$args{option}} = $args{value};
 }
 
-# "Find" an object (i.e. look up its ID)
+# "Find" an object (i.e. look up its ID). If given something that is
+# already a valid object, validates that the object is still valid. If the
+# assertion flag is passed, an invalid object will result in a fatal error.
 
 sub Find
 {
-	shift if @_ > 1;
-	my $id = shift;
+	shift if ($_[0] eq __PACKAGE__);
+	my ($id, $assert) = @_;
 
-	defined($obj_index{$id}) ? $obj_index{$id} : undef;
+	$id = $id->{id} if (ref($id) && UNIVERSAL::isa($id, __PACKAGE__));
+	if (defined($obj_index{$id})) {
+	    $obj_index{$id};
+	} elsif ($assert) {
+	    my ($pkg, $file, $line) = caller();
+	    croak "Assertion failed: '$id' is not a valid object ID\n" .
+		  "Called from $pkg ($file) line $line";
+	} else {
+	    undef;
+	}
+}
+
+# Function version of id(). If given a reference, it will check that it is
+# really a Games::Object (or derivative); if given something already an
+# ID, it validates that the Id exists. Like Find(), this takes an assertion
+# flag as well.
+
+sub Id
+{
+	my ($obj, $assert) = @_;
+
+	if (ref($obj) && UNIVERSAL::isa($obj, __PACKAGE__)) {
+	    $obj->id();
+	} elsif (defined($obj_index{$obj})) {
+	    $obj;
+	} elsif ($assert) {
+	    my ($pkg, $file, $line) = caller();
+	    croak "Assertion failed: '$obj' is not a valid object\n" .
+		  "Called from $pkg ($file) line $line";
+	} else {
+	    undef;
+	}
 }
 
 # Go down the complete list of objects and perform a method call on each. If
@@ -515,7 +549,16 @@ sub Process
 	my ($method, @args) = @_;
 	$method = 'process' if (!defined($method));
 
+	# Note also that we make a special exception in the case of method
+	# 'destroy'. In such a case, the global object gets shuffled to the
+	# end of the list. Otherwise, we would destroy it first, and the
+	# very next object would magically reinstantiate it when it attempted
+	# to spawn an objectDestoyed event.
 	my @objs = sort { $b->{priority} <=> $a->{priority} } values %obj_index;
+	if ($method eq 'destroy' && $objs[0]->id() eq GLOBAL_OBJ_ID) {
+	    my $top = shift @objs;
+	    push @objs, $top;
+	}
 	foreach my $obj (@objs) {
 	    $obj->$method(@args);
 	}
@@ -781,6 +824,27 @@ sub load
 
 	# We now have an object ready to load into, so perform the load.
 	$obj->_protect_attrs(\&_LoadData, $file, $obj);
+
+	# Look for snapshots of attributes that had been created with the
+	# AUTOCREATE option and instantiate these, but ONLY if they do not
+	# already exist (thus a load-in-place will not clobber them)
+	foreach my $aname (keys %{$obj->{snapshots}}) {
+	    if (!defined($obj->{attr}{$aname})) {
+		my $attr = {};
+		my $snapshot = $obj->{snapshots}{$aname};
+		foreach my $key (keys %$snapshot) {
+		    $attr->{$key} = (
+			$key =~ /^(value|real_value)$/ ? (
+			    ref($snapshot->{$key}) eq 'ARRAY' ? [ ] :
+			    ref($snapshot->{$key}) eq 'HASH'  ? { } :
+				$snapshot->{$key}
+			) :
+			$snapshot->{$key}
+		    );
+		}
+		$obj->{attr}{$aname} = $attr;
+	    }
+	}
 
 	# Make sure the ID is what we expect.
 	$obj->{id} = $id;
@@ -1209,6 +1273,33 @@ sub new_attr
 	$obj->_adjust_int_attr($aname)
 	    if ($attr->{type} eq 'int' && !$attr->{track_fractional});
 
+	# Finally, if DONTSAVE and AUTOCREATE were used together, then
+	# take a kind of "snapshot" of this attribute so it can be later
+	# restored.
+	if ( ($attr->{flags} & ATTR_DONTSAVE)
+	  && ($attr->{flags} & ATTR_AUTOCREATE) ) {
+	    my $type = $attr->{type};
+	    my $snapshot = {};
+	    foreach my $key (keys %$attr) {
+		$snapshot->{$key} = (
+		    $key =~ /^(value|real_value)$/	? (
+		        $type =~ /^(int|number)$/	? (
+			    defined($attr->{minimum})	?
+				$attr->{minimum} : 0
+			) :
+		        $type eq 'string'		? '' :
+		        $type eq 'any' &&
+		          ref($attr->{$key}) eq 'ARRAY'	? [ ] :
+		        $type eq 'any' &&
+		          ref($attr->{$key}) eq 'HASH'	? { } :
+		        undef
+		    ) :
+		    $attr->{$key}
+	        );
+	    }
+	    $obj->{snapshots}{$aname} = $snapshot;
+	}
+
 	# Done.
 	$obj;
 }
@@ -1306,6 +1397,23 @@ sub raw_attr
 	$attr->{$prop};
 }
 
+# Fetch the reference to an attribute.
+
+sub attr_ref
+{
+	my ($obj, $aname, $prop) = @_;
+
+	$prop = 'value' if (!defined($prop));
+	if (defined($obj->{attr}{$aname})) {
+	    my $attr = $obj->{attr}{$aname};
+	    defined($attr->{$prop}) ? \$attr->{$prop} : undef;
+	} else {
+	    carp "WARNING: Attempt to get reference to '$prop' of " .
+		 "non-existent attribute '$aname'";
+	    undef;
+	}
+}
+
 # Modify an attribute
 
 sub mod_attr
@@ -1374,7 +1482,7 @@ sub mod_attr
 	    [ 'req', 'name' ],
 	], 1 );
 	my $aname = $args{name};
-	croak("Attempt to modify unknown attribute '$aname}' " .
+	croak("Attempt to modify unknown attribute '$aname' " .
 		"on object $obj->{id}") if (!defined($obj->{attr}{$aname}));
 	my $attr = $obj->{attr}{$aname};
 
@@ -1608,11 +1716,14 @@ sub bind_event
 	1;
 }
 
-# Process an event
+# Process an event.
 
 sub event
 {
 	my ($obj, $event, $key, @args) = @_;
+
+	# Events are never called directly on the global object.
+	return 1 if ($event eq 'GLOBAL_OBJ_ID');
 
 	my $gbl = GlobalObject();
 	my $rc;
@@ -1859,22 +1970,29 @@ sub priority
 ####
 ## DESTRUCTORS
 
-# Destroy the object and remove it from the internal table.
+# Destroy the object and remove it from the internal table. The caller can
+# pass in optional arbitrary parameters that are passed to any event binding.
 
 sub destroy
 {
 	my $obj = shift;
 
+	# This next statement will prevent a "double-destroy", as this method
+	# is called again when the final reference is undefed.
 	return if (!defined($obj->{id}));
+
+	# Trigger event BEFORE deletion so that the event code can examine
+	# the object
 	my $id = $obj->{id};
+	$obj->event('objectDestroyed', $id, @_);
+
+	# Delete all keys so that it can no longer be used.
 	foreach my $key (keys %$obj) {
 	    delete $obj->{$key};
 	}
+
+	# Remove from internal table.
 	delete $obj_index{$id};
 }
-
-# Hook into destroy() method if not called before undefed.
-
-sub DESTROY { shift->destroy(); }
 
 1;

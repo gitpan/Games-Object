@@ -111,7 +111,48 @@ module, enter:
 
 Replace I<filename> with a filename of your choice in some directory that is
 writable. You should then be able to view it in most browsers by typing
-in the URL "file:/I<filename>".
+in the URL "file://I<filename>".
+
+=head1 CHANGES
+
+The current version is 0.04 (alpha). The following are the changes from last
+version:
+
+=over 4
+
+=item *
+
+This module now requires a minimum Perl version of 5.6.0.
+
+=item *
+
+Added ability to assert validity of ID in Find() and fail if not valid.
+
+=item *
+
+Added the Id() function to achieve similar assertion functionality.
+
+=item *
+
+Added the objectDestroyed event, triggered when destroy() is called on
+an object.
+
+=item *
+
+Added attr_ref() to allow attributes to be used in -textvariable
+and -variable options in Perl Tk widgets.
+
+=item *
+
+Fixed bug in load() that caused an annoying but harmless "substr
+outside of string" warning under -w if the save file had undefined
+hash values.
+
+=item *
+
+Documented the attribute flags and added flag ATTR_AUTOCREATE.
+
+=back
 
 =head1 DESCRIPTION
 
@@ -250,6 +291,35 @@ This will work no matter how the object was created, either through creating
 a new object or loading an object from a file.
 
 If the ID specified is not a valid object, C<Find()> will return undef.
+
+The C<Find()> function takes an additional optional argument that is the
+assertion flag. Setting this to a true value will cause C<Find()> to croak
+(via, predictably, C<croak()>) with an error of the format:
+
+    Assertion failed: '<id>' is not a valid object ID
+    Called from <package> line <line>
+
+Example:
+
+    Find('The Player', 1);
+
+=head1 Obtaining the ID of a created object
+
+The ID of a valid object is obtained with the C<id()> method. Example:
+
+    if ($obj->id() eq 'HugeRedDragon') {
+	print "Oh-oh, NOW you've done it ...\n";
+	...
+    }
+
+There is a function called C<Id()> that does the same thing, but also has
+an optional assertion flag argument like C<Find()>. Specifying this flag as
+true will cause the program to croak with a fatal error if passed an object
+that is no longer a valid object (i.e., it was C<destroy()>ed but a reference
+to the physical Perl object is still defined), or is a reference to something
+else. Example:
+
+    my $id = Id($player, 1);
 
 =head1 Destroying objects
 
@@ -725,6 +795,91 @@ stored. Say we change the above definition to:
 Now if the internal value is 1.4, retrieving it will result in 1. But if the
 internal value reaches 1.5, now retrieving the value will return 2.
 
+Finally, there is a special option to C<new_attr()> called I<-flags>. This
+allows you to specify one or more flags that affect attribute behavior. These
+flags are defined as single-bit flags, thus multiple flags are bitwise
+or'ed together (using the C<|> operator). Constants for these values are
+defined in C<Games::Object> but are not exported by default. You may import
+them into your namespace by specifying the C<:attrflags> tag in the C<use>
+statement. Example:
+
+    use Games::Object qw(:attrflags);
+
+This will define the following flags:
+
+=over 4
+
+=item ATTR_STATIC
+
+This indicates that the value of this attribute is static, meaning it will
+not change. Any attempt to modify it using C<mod_attr()> will fail. You
+can circumvent this using C<attr_ref()>.
+
+=item ATTR_DONTSAVE
+
+This tells the object not to save this attribute to the save game file
+when the C<save()> method is invoked. Likewise, if you perform a C<load()>
+in place of an existing object, the current values of these attributes will
+be preserved.
+
+=item ATTR_AUTOCREATE
+
+This flag has an effect only when used with C<ATTR_DONTSAVE>. Normally, if
+you create an object with a C<ATTR_DONTSAVE> flag, then destroy and reload
+the object from a file fresh via C<new()> with the I<-file> option, this
+attribute will disappear. If the attribute were created with the
+C<ATTR_AUTOCREATE> flag before it was saved to the file, then loading this
+object will cause the attribute to be auto-created for you.
+
+The initial value of such an auto-created attribute depends on the datatype
+of the attribute:
+
+=over 4
+
+=item C<int> or C<number>
+
+The starting value is 0, unless the attribute specified a I<-minimum>
+attribute, in which case this value is used.
+
+=item C<string>
+
+The starting value is an empty string.
+
+=item C<any>
+
+Dependent on the type of data first assigned to it when it was created. If
+this was a simple scalar, this will be set to an empty string. If an array
+or hash reference, it will be set to an empty array or hash reference.
+
+=item C<object>
+
+Always initialized to undef. This behavior may change in the future.
+
+=back
+
+Think of this feature as similar to autovivication, but extended to the
+attributes.
+
+=back
+
+Here is an example of creating an attribute that will not be saved to a file
+but will be rereated when the object is created fresh from a previous save
+file:
+
+    $obj->new_attr(
+	-name	=> "widget_table",
+	-type	=> "any",
+	-value	=> {
+	    canvas	=> $mainw->Canvas(...),
+	    title	=> $mainw->Label(...),
+	},
+	-flags	=> ATTR_DONTSAVE | ATTR_AUTOCREATE,
+    );
+
+If this object is later saved to a file, then destroyed, then recreated from
+that file, this attribute will be auto-created and the value set to a hash
+reference pointing to an empty hash.
+
 =back
 
 =head2 Attribute Existence
@@ -790,6 +945,41 @@ of this type):
     $cskill->{melee} ++;
 
 In all cases, if the attribute specified does not exist, undef is returned.
+
+=head2 Retrieving the reference to an attribute value
+
+You may also retrieve a reference to the stored attribute value with the
+C<attr_ref()> method. Example:
+
+    $aref = $obj->attr_ref('hit_points');
+
+This method can be used like C<attr()>, in that you can select either current
+value or the real value in the case of a split attribute. If you attempt
+to retrieve a C<real_value> when none exists, undef is returned instead. If
+you attempt to retrieve a reference to an attribute that does not exist, you
+also get back undef, but a warning is printed to STDERR, so that a
+subsequent "Can't use undef as a <X> reference" Perl error is not so
+mysterious.
+
+This should be used with care. If you modify the value that the reference
+points to, you circumvent the event code (i.e. the change will not spawn
+attribute modified events). The purpose of this method is to allow hooks
+into other Perl modules that act on changes to a variable's value. A perfect
+example of this would be Tk. Say you design an interface to a game in Perl
+Tk and want to use a Tk::ProgressBar widget to show the player's current
+health. The constructor for this widget takes a I<-variable> parameter, which
+is a reference to a variable whose value affects the position of the
+ProgressBar automatically. By specifying this parameter in the following way:
+
+    -variable	=> $player->attr_ref('hit_points'),
+
+You now allow the ProgressBar to update automatically when the current value
+for the player's hit points change. Otherwise, you would have to create
+a package global variable to store the hit points, specify it in the
+the Tk::ProgressBar constructor, write a method to copy the hit points attribute
+value into the variable, and perform a C<bind_event()> to call the method
+when the attribute changes. This is far too much work for something that should
+be simple.
 
 =head2 Modifying Attributes
 
@@ -1391,6 +1581,25 @@ L<"Special Notes on load/save events"> for more details.
 
 =back
 
+=item * objectDestroyed
+
+=over 4
+
+=item * When triggered
+
+When C<destroy()> has been called on the object, but before the object is
+cleaned up (thus it is still valid).
+
+=item * Key value
+
+The ID of the object being destroyed.
+
+=item * Additional parameters passed
+
+None.
+
+=back
+
 =back
 
 =head2 Special Notes on load/save events
@@ -1575,6 +1784,11 @@ can be obtained by specifying priority() with no arguments.
 
 Object priority can be a nice way of defining initiative in dungeon-type games.
 
+B<NOTE: Avoid using extremely large or extremely small priority numbers.>
+Keep your priority numbers in the range of -999_999_999 to +999_999_999,
+which should be more than sufficient. Values outside this range are reserved
+for internal use.
+
 =head2 Attribute tend-to priority
 
 By default, tend-to rates on attributes are processed in no particular order
@@ -1737,8 +1951,8 @@ directly tested (though many are indirectly tested).
 
 =head2 If you find a bug not documented above
 
-Please send email to the author
-of the module at C<stwrtpj@earthlink.net> with a description of the bug.
+Please send email to the author of the module at Peter J. Stewart
+E<lt>stwrtpj@earthlink.netE<gt> with a description of the bug.
 Please include any error messages you may have received. Snippets of code
 that trigger the bug would be helpful as well.
 

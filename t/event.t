@@ -5,7 +5,7 @@
 use strict;
 use Test;
 
-BEGIN { $| = 1; plan tests => 29 }
+BEGIN { $| = 1; plan tests => 32 }
 
 # Write a small Perl module that we will use to subclass to Games::Object
 use File::Basename;
@@ -170,6 +170,14 @@ sub event_object_save {
 	1;
 }
 
+sub event_object_destroy {
+	my $obj = shift;
+	my %args = @_;
+	my $nn = $args{nudge_nudge};
+	push @RESULTS, $obj->id() . ": $nn";
+	1;
+}
+
 1;
 ';
 close PKG;
@@ -330,6 +338,10 @@ eval('$obj1->bind_event($obj1->id(), "objectLoaded", "event_object_load")');
 ok( $@ eq '' );
 eval('$obj3->bind_event($obj3->id(), "objectLoaded", "event_object_load")');
 ok( $@ eq '' );
+eval('$obj1->bind_event($obj1->id(), "objectDestroyed", "event_object_destroy")');
+ok( $@ eq '' );
+eval('$obj3->bind_event($obj3->id(), "objectDestroyed", "event_object_destroy")');
+ok( $@ eq '' );
 
 # Save all objects to a file.
 my $file = IO::File->new();
@@ -338,12 +350,19 @@ $file->open(">$filename") or die "Cannot open file $filename\n";
 Process('save', -file => $file);
 $file->close();
 
-# Delete them and load them back.
+# Destroy them and load them back. On destroy, insure that the proper events
+# we called.
+$obj1->initialize();
+$obj1->priority(100);
 undef $obj1;
 undef $obj2;
 undef $obj3;
-Process('destroy');
+Process('destroy', nudge_nudge => "Say no more");
+ok( @GOTestModule::RESULTS == 2
+ && $GOTestModule::RESULTS[0] eq 'Object 1: Say no more'
+ && $GOTestModule::RESULTS[1] eq 'Object 3: Say no more' );
 ok( TotalObjects() == 0 );
+GOTestModule->initialize();
 $file->open("<$filename") or die "Cannot open $filename for read\n";
 while (!$file->eof()) { eval('Games::Object->new(-file => $file)'); }
 $file->close();

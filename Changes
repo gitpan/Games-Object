@@ -1,5 +1,27 @@
 Revision history for Perl extension Games::Object.
 
+0.04  Sat Jun  8 12:46:16 MDT 2002
+	Much of the changes here are to support the upcoming release of the
+	Games::TileMap module.
+
+	This module now requires a minimum Perl version of 5.6.0.
+
+	Added ability to assert validity of ID in Find() and fail if not valid.
+
+	Added the Id() function to achieve similar assertion functionality.
+
+	Added the objectDestroyed event, triggered when destroy() is called on
+	an object.
+
+	Added attr_ref() to allow attributes to be used in -textvariable
+	and -variable options in Perl Tk widgets.
+
+	Fixed bug in load() that caused an annoying but harmless "substr
+	outside of string" warning under -w if the save file had undefined
+	hash values.
+
+	Documented the attribute flags and added flag ATTR_AUTOCREATE.
+
 0.03  Sat Apr  6 06:42:00 MST 2002
 	Completely reworked the event handling mechanism to allow events
 	to be targeted for specific objects.
