@@ -11,7 +11,7 @@ use Games::Object::Common qw(ANAME_MANAGER FetchParams LoadData SaveData);
 
 use vars qw($VERSION @EXPORT_OK %EXPORT_TAGS @ISA);
 
-$VERSION = "0.10";
+$VERSION = "0.11";
 @ISA = qw(Exporter);
 @EXPORT_OK = qw(ProcessList
 		OBJ_CHANGED OBJ_AUTOALLOCATED OBJ_PLACEHOLDER OBJ_DESTROYED
@@ -567,7 +567,7 @@ sub save
 	# Fetch parameters
 	FetchParams(\@_, \%args, [
 	    [ 'opt', 'file', undef, 'file' ],
-	    [ 'opt', 'filename', undef, 'file' ],
+	    [ 'opt', 'filename', undef, 'string' ],
 	    [ 'opt', 'other', undef, 'object' ],
 	]);
 
@@ -755,9 +755,7 @@ sub is
 
 	foreach my $fname (@fnames) {
 	    my $flag = $obj->_find_flag($fname);
-	    croak("User flag '$fname' on '$obj->{id}' is undefined in is()")
-	        unless (defined($flag));
-	    $total++ if ($flag->{value});
+	    $total++ if (defined($flag) && $flag->{value});
 	}
 	$total == scalar(@fnames);
 }
@@ -1043,25 +1041,53 @@ sub _find_attr
 sub _find_flag
 {
 	my ($obj, $fname) = @_;
-	my $fobj = $obj;
 	my $flag;
 	my $inherited = 0;
-	while (!$flag && $fobj) {
-	    if (defined($fobj->{flag}{$fname})) {
-		$flag = $fobj->{flag}{$fname};
-		$inherited = ( $fobj->{id} ne $obj->{id} );
-		if ($inherited && $flag->{flags} & FLAG_NO_INHERIT) {
-		    undef $flag;
-		    last;
-		}
-	    } elsif (defined($fobj->{inherit})) {
-		$fobj = $fobj->{inherit};
+
+	# Fetch the manager of this object.
+	my $man = $obj->manager();
+
+	# Check for no inheritance relation
+	if (!$man || !$man->has_relation('inherit')) {
+
+	    if (defined($obj->{flag}{$fname})) {
+		wantarray ? ( $obj->{flag}{$fname}, 0 ) : $obj->{flag}{$fname};
 	    } else {
-		undef $fobj;
+		wantarray ? ( undef, 0 ) : undef;
 	    }
+
+	} else {
+
+	    # Do it
+	    my $fobj = $obj;
+	    while (!$flag && $fobj) {
+	        if (defined($fobj->{flag}{$fname})) {
+		    # Found flag.
+		    $flag = $fobj->{flag}{$fname};
+		    $inherited = ( $fobj->{id} ne $obj->{id} );
+		    if ($inherited && $flag->{flags} & FLAG_NO_INHERIT) {
+		        # But it was found on a inherit, and we're not allowed
+		        # to inherit this attribute, so this is as good as not
+		        # being defined at all. Note that we leave $inherited
+		        # set, so the caller can tell if we failed to find it
+		        # because it did not exist or could not be inherited, in
+		        # case that makes a difference to the caller.
+		        undef $flag;
+		        last;
+		    }
+	        } elsif ($man->inheriting_from($fobj)) {
+		    # We have an inheritance, so check it.
+		    $fobj = $man->inheriting_from($fobj);
+	        } else {
+		    # No more inheritance up the line, so we stop.
+		    undef $fobj;
+	        }
+	    }
+
+	    # Return the result
+	    wantarray ? ( $flag, $inherited ) : $flag;
 	}
 
-	wantarray ? ( $flag, $inherited ) : $flag;
 }
 
 ####

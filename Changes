@@ -1,5 +1,22 @@
 Revision history for Perl extension Games::Object.
 
+0.11  Wed Oct 15 2003
+
+    This is a patch release only to fix critical bugs:
+
+    - Fixed bug in save() where -filename was not parsed properly.
+
+    - Fixed bug in define_relation() where the relate_method was being used
+      as the name passed from the relator instead of the actual name of the
+      relationship. Changed relate.t test to tickle this bug again if it
+      ever resurfaces.
+
+    - Adding manager code broke flag inheritance. Fixed. Also added missing
+      tests for flag inheritance to inherit.t
+
+    - Undefined flags no longer croak(), but instead simply return false,
+      in order to be consistent with the way attributes work.
+
 0.10  Tue Jul 29 2003
 	WARNING: This version is a redesign of several key components of the
 	system. This version is most likely incompatible with all older

@@ -9,7 +9,7 @@ use Games::Object::Common qw(FetchParams LoadData SaveData ANAME_MANAGER);
 
 use vars qw($VERSION @EXPORT_OK %EXPORT_TAGS @ISA);
 
-$VERSION = "0.10";
+$VERSION = "0.11";
 @ISA = qw(Exporter);
 @EXPORT_OK = qw($CompareFunction REL_NO_CIRCLE);
 %EXPORT_TAGS = (
@@ -53,6 +53,7 @@ sub _CompareAddOrder {
 sub _CreateRelators
 {
 	my %args = @_;
+	my $realname = $args{name};
 	my $name = $args{relate_method};
 	my $uname = $args{unrelate_method};
 	my $rname = $args{related_method};
@@ -63,7 +64,7 @@ sub _CreateRelators
 	*$name = sub {
 	    my $man = shift;
 	    my $args = ( ref($_[$#_]) eq 'HASH' ? pop @_ : {} );
-	    $man->relate(how => $name,
+	    $man->relate(how => $realname,
 			 self => $_[0],
 			 object => $_[1],
 			 other => $_[2],
@@ -72,22 +73,22 @@ sub _CreateRelators
 	*$uname = sub {
 	    my $man = shift;
 	    my $args = ( ref($_[$#_]) eq 'HASH' ? pop @_ : {} );
-	    $man->unrelate(how => $name,
+	    $man->unrelate(how => $realname,
 			   object => $_[0],
 			   other => $_[1],
 			   args => $args);
 	} if (!defined(&$uname));
 	*$rname = sub {
 	    my $man = shift;
-	    $man->related(how => $name, object => $_[0]);
+	    $man->related(how => $realname, object => $_[0]);
 	} if (!defined(&$rname));
 	*$iname = sub {
 	    my $man = shift;
-	    $man->is_related(how => $name, self => $_[0], object => $_[1]);
+	    $man->is_related(how => $realname, self => $_[0], object => $_[1]);
 	} if (!defined(&$iname));
 	*$lname = sub {
 	    my $man = shift;
-	    $man->related_list(how => $name, self => $_[0]);
+	    $man->related_list(how => $realname, self => $_[0]);
 	} if (!defined(&$lname));
 }
 
@@ -519,7 +520,7 @@ sub define_relation
 	], 1 );
 
 	# Add it. Note that we allow redefinition at will.
-	my $rname = delete $args{name};
+	my $rname = $args{name};
 	$args{relate_method} = $rname
 	    if (!$args{relate_method});
 	$args{unrelate_method} = "un${rname}"

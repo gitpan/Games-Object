@@ -5,10 +5,10 @@
 use strict;
 use warnings;
 use Test;
-use Games::Object qw(ATTR_STATIC ATTR_NO_INHERIT);
+use Games::Object qw(ATTR_STATIC ATTR_NO_INHERIT FLAG_NO_INHERIT);
 use Games::Object::Manager;
 
-BEGIN { $| = 1; plan tests => 40 }
+BEGIN { $| = 1; plan tests => 46 }
 
 # Create two objects and parent one to the other.
 my $man = Games::Object::Manager->new();
@@ -24,11 +24,15 @@ print "# DEBUG: \$@ = $@" if ($@);
 my $test = $man->inheriting_from($cobj);
 ok( ref($test) eq 'Games::Object' && $test->id() eq $pobj->id() );
 
-# Create some attributes on the parent.
+# Create some attributes and flags on the parent.
 eval('$pobj->new_attr(
 	-name	=> "FeelFree",
 	-type	=> "int",
 	-value	=> 10)');
+ok( $@ eq '' );
+eval('$pobj->new_flag(
+	-name	=> "FlagFeelFree",
+	-value	=> 1)');
 ok( $@ eq '' );
 print "# DEBUG: \$@ = $@" if ($@);
 eval('$pobj->new_attr(
@@ -45,11 +49,21 @@ eval('$pobj->new_attr(
 	-value	=> 30)');
 ok( $@ eq '' );
 print "# DEBUG: \$@ = $@" if ($@);
+eval('$pobj->new_attr(
+	-name	=> "FlagMineMineMine",
+	-flags	=> FLAG_NO_INHERIT,
+	-value	=> 1)');
+ok( $@ eq '' );
+print "# DEBUG: \$@ = $@" if ($@);
 
 # All but the last should appear to exist on the child.
 ok( $cobj->attr_exists("FeelFree") );
 ok( $cobj->attr_exists("CantTouchThis") );
 ok( !$cobj->attr_exists("MineMineMine") );
+
+# Should be able to see the first flag but not the second
+ok( $cobj->is("FlagFeelFree") );
+ok( !$cobj->is("FlagMineMineMine") );
 
 # And they should report proper values from the child.
 ok( $cobj->attr("FeelFree") == 10 );
@@ -60,6 +74,12 @@ ok( !defined($cobj->attr("MineMineMine")) );
 ok( !$cobj->attr_exists_here("FeelFree") );
 ok( !$cobj->attr_exists_here("CantTouchThis") );
 ok( !$cobj->attr_exists_here("MineMineMine") );
+
+# Clear flag on parent. Child should now report it cleared.
+eval('$pobj->clear("FlagFeelFree")');
+ok( $@ eq '' );
+print "# DEBUG: \$@ = $@" if ($@);
+ok( !$cobj->is("FlagFeelFree") );
 
 # Put a modifier on one of the attributes for the parent and process it. We
 # should see the new value from the child. It should still exist only

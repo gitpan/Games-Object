@@ -32,7 +32,7 @@ sub new
 	# in the game has a location, which has no special tests or actions
 	# associated with it. This relationship parallels others.
 	$world->define_relation(
-	    -name		=> "locate",
+	    -name		=> "location",
 	    -relate_method	=> "locate",
 	    -related_method	=> "location",
 	    -is_related_method	=> "is_located_at",
@@ -43,7 +43,7 @@ sub new
 
 	# The carry relationship is specific to the player carrying an item.
 	$world->define_relation(
-	    -name		=> "carry",
+	    -name		=> "hold",
 	    -relate_method	=> "carry",
 	    -related_method	=> "carried_by",
 	    -is_related_method	=> "is_carrying",
@@ -55,7 +55,7 @@ sub new
 	# The contain relationship is used for objects that can hold other
 	# objects.
 	$world->define_relation(
-	    -name		=> "contain",
+	    -name		=> "containing",
 	    -relate_method	=> "contain",
 	    -related_method	=> "contained_in",
 	    -is_related_method	=> "is_contained_in",

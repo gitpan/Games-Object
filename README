@@ -1,4 +1,4 @@
-Games/Object version 0.10
+Games/Object version 0.11
 =========================
 
 IMPORTANT NOTE TO USERS OF VERSIONS 0.05 AND PREVIOUS
@@ -82,7 +82,8 @@ The functionality of this module can be divided into the following sections:
 
 CHANGES FROM LAST VERSION
 
-See the Changes file for details.
+This is a patch release only to fix critical bugs in 0.10. See the Changes
+file for details.
 
 
 INSTALLATION

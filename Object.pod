@@ -145,84 +145,40 @@ have at least this version, as I used features specific to this version.
 
 =head1 CHANGES
 
-B<IMPORTANT!> Version 0.10 represents a major overhaul of the design of the
-module. If you have used previous versions of the module, you will need to
-modify your code. Many of the features that were implemented as functions in
-the Games::Object module (such as C<Process()>, C<Find()>, etc), have been
-reimplemented as methods in the companion Games::Object::Manager module.
-
-Below is a summary of the features affected by this redesign:
+Version 0.11 is a patch release only to fix major bugs, no new functionality
+implemented. The following bugs were fixed:
 
 =over 4
 
 =item *
 
-The event system has been redesigned from scratch. Instead of using a system
-based on the Tk system, I have instead moved the bulk of the processing and
-definitions to the objects themselves. In addition, events have been renamed
-actions. Actions are defined on the exact objects on which you wish them
-to act when you create the objects, or on attributes when you create them
-on the objects.
-
-The new system is far more intuitive and easier to manage.
+Fixed bug in save() where I<-filename> was not parsed properly.
 
 =item *
 
-Object inheritance (formerly called parenting) has been reimplemented as a
-type of object relationship handled by the object manager class. This means
-that you will have to use the object manager class in order to make use
-of this feature.
+Fixed bug in define_relation() where the relate_method was being used
+as the name passed from the relator instead of the actual name of the
+relationship. Changed relate.t test to tickle this bug again if it
+ever resurfaces.
 
 =item *
 
-You can have the module create accessor methods for you to access the attributes
-that you create. For example, if you create an attribute called C<hit_points>,
-you have the option of polling its value like this:
-
-    my $hp = $object->hit_points();
-
-rather than the old way (which still works) of:
-
-    my $hp = $object->attr("hit_points");
-
-Likewise, you can set a new value with:
-
-    $object->hit_points(10);
-
-or modify an existing one relative to its current value with:
-
-    $object->mod_hit_points(-2);
+Adding manager code broke flag inheritance. Fixed. Also added missing
+tests for flag inheritance to inherit.t
 
 =item *
 
-Storing object refs in attributes has been simplified. You no longer need
-to register the class you are using.
-
-=item *
-
-The complexity of parameter passing has been reduced in areas where it made
-sense to do so. In other words, methods that need only one or two parameters
-can be called with positional parameters rather than named parameters, leading
-to a little less typing.
-
-=item *
-
-There are now two constructors, depending on whether you are creating
-an object from scratch or creating one from a file. This makes it easier
-to understand what your code is doing and makes it easier for me to maintain
-the code. It also makes it easier for you to override this functionality in
-your subclass if you feel the need to.
-
-=item *
-
-My email address has changed B<yet again> (thanks AT&T/Comcast). It is now
-C<p.stewart@comcast.net>
+Undefined flags no longer croak(), but instead simply return false,
+in order to be consistent with the way attributes work.
 
 =back
 
 =head1 COMPATIBILITY
 
-Sorry, folks, but version 0.10 completely breaks compatibility with previous
+Version 0.11 is compatible with version 0.10. Any workarounds you might have
+done to get around the aforementioned bugs should still continue to work.
+
+Version 0.10 was a major restructuring that broke compatibility with earlier
 versions.
 
 =head1 DESCRIPTION
