@@ -1,5 +1,26 @@
 Revision history for Perl extension Games::Object.
 
+0.05  Mon Nov 25 18:18:17 MST 2002
+	Added a feature that allows a more deterministic way of specifying
+	processing order of objects with the same priority.
+
+	Fixed a false assumption problem in event.t that caused a test
+	failure under Perl 5.8.0.
+
+	Persistent mods can now be made to take effect immediately by adding
+	-apply_now => 1 to the mod_attr() call. This indirectly helps
+	alleviate the timing issue with process(), enough that I have removed
+	it from the BUGS section.
+
+	Persistent mods can now work properly with attributes at OOB conditions.
+	This was more a documentation change than a code change, as this
+	feature was always present, but was not obvious from the docs.
+
+	Added ability to inherit attribute values via object parenting. Added
+	the corresponding inherit.t test suite.
+
+	Made some corrections to examples in the POD docs.
+
 0.04  Sat Jun  8 12:46:16 MDT 2002
 	Much of the changes here are to support the upcoming release of the
 	Games::TileMap module.

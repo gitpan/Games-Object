@@ -8,6 +8,7 @@ t/TEST
 t/attr.t
 t/create.t
 t/event.t
+t/inherit.t
 t/flag.t
 t/loadsave.t
 t/priority.t

@@ -10,26 +10,33 @@ use IO::File;
 
 use vars qw($VERSION @EXPORT_OK %EXPORT_TAGS @ISA);
 
-$VERSION = "0.04";
+$VERSION = "0.05";
 @ISA = qw(Exporter);
 @EXPORT_OK = qw(TotalObjects CreateFlag ModifyFlag Find Id RegisterEvent Process
 		SetProcessList FetchParams RegisterClass IsClassRegistered
 		OBJ_CHANGED OBJ_AUTOALLOCATED OBJ_PLACEHOLDER OBJ_DESTROYED
-		ATTR_STATIC ATTR_DONTSAVE ATTR_AUTOCREATE EVENT_NULL_CALLBACK);
+		ATTR_STATIC ATTR_DONTSAVE ATTR_AUTOCREATE ATTR_NO_INHERIT
+		EVENT_NULL_CALLBACK
+		$CompareFunction);
 %EXPORT_TAGS = (
     functions		=> [qw(TotalObjects Flag Find Id RegisterEvent Process
 			       SetProcessList FetchParams
 			       RegisterClass IsClassRegistered)],
     objflags		=> [qw(OBJ_CHANGED OBJ_AUTOALLOCATED
 			       OBJ_PLACEHOLDER OBJ_DESTROYED)],
-    attrflags		=> [qw(ATTR_STATIC ATTR_DONTSAVE ATTR_AUTOCREATE)],
-    all			=> [qw(:functions :objflags :attrflags)],
+    attrflags		=> [qw(ATTR_STATIC ATTR_DONTSAVE ATTR_AUTOCREATE
+			       ATTR_NO_INHERIT)],
+    variables		=> [qw($CompareFunction)],
+    all			=> [qw(:functions :objflags :attrflags :variables)],
 );
+
+use vars qw($CompareFunction);
 
 # Define some attribute flags.
 use constant ATTR_STATIC	=> 0x00000001;
 use constant ATTR_DONTSAVE	=> 0x00000002;
 use constant ATTR_AUTOCREATE	=> 0x00000004;
+use constant ATTR_NO_INHERIT	=> 0x00000008;
 
 # Define object flags (internal)
 use constant OBJ_CHANGED        => 0x00000001;
@@ -42,6 +49,9 @@ use constant EVENT_NULL_CALLBACK	=> '__NULL_CALLBACK__';
 
 # Define the ID of the global object
 use constant GLOBAL_OBJ_ID	=> 'Games::Object::__GLOBAL__';
+
+# Define the comparison function to use for processing order.
+$CompareFunction = '_CompareDefault';
 
 # Define a table that instructs this module how to deal with object references
 # upon save and load. In this manner we can handle blessed objects and even
@@ -68,6 +78,10 @@ my %obj_index = ();
 # Define a counter for creating objects when the user wants us to assume that
 # every new object is unique.
 my $obj_next = 0;
+
+# Define a counter that will be used to track the order in which objects
+# are created. This is to support a new feature in v0.05
+my $obj_order = 0;
 
 # And if we are doing this, we want to try and use space efficiently by
 # reclaiming unused IDs. Thus we track the lowest available opening.
@@ -251,6 +265,18 @@ sub _LoadData
 	    croak("Unknown tag '$tag' in file, file may be corrupted");
 	}
 
+}
+
+# Default comparison function when determining the order of processing of
+# two objects.
+
+sub _CompareDefault { $b->{priority} <=> $a->{priority} }
+
+# Comparison function when using the creation order option
+
+sub _CompareCreationOrder {
+    my $cmp = $b->{priority} <=> $a->{priority};
+    $cmp == 0 ? $a->{order} <=> $b->{order} : $cmp;
 }
 
 ####
@@ -554,7 +580,7 @@ sub Process
 	# end of the list. Otherwise, we would destroy it first, and the
 	# very next object would magically reinstantiate it when it attempted
 	# to spawn an objectDestoyed event.
-	my @objs = sort { $b->{priority} <=> $a->{priority} } values %obj_index;
+	my @objs = sort $CompareFunction values %obj_index;
 	if ($method eq 'destroy' && $objs[0]->id() eq GLOBAL_OBJ_ID) {
 	    my $top = shift @objs;
 	    push @objs, $top;
@@ -731,6 +757,21 @@ sub new
 	    $obj->{pmod_active} = 0;
 	}
 
+	# Set the order if not defined as this was added in 0.05.
+	if (defined($args{filename})) {
+	    # From template file. We always assign a new order value.
+	    $obj->{order} = $obj_order++;
+	} elsif (defined($obj->{order})) {
+	    # Object already has order set. Make sure the next order value
+	    # is greater than this. This is so the obj_order value will be
+	    # correct after a full game load.
+	    $obj_order = $obj->{order} + 1
+		if ($obj_order <= $obj->{order});
+	} else {
+	    # Order not yet set.
+	    $obj->{order} = $obj_order++;
+	}
+
 	# If any flags have the autoset option, we need to set these, if
 	# we're not here as the result of a load from file.
 	unless ($from_file) {
@@ -849,6 +890,12 @@ sub load
 	# Make sure the ID is what we expect.
 	$obj->{id} = $id;
 
+	# Compatibility check for versions 0.04 and previous: If the
+	# order attribute is not set, set it now. Theoretically, either all
+	# objects in the save file have the order attribute set or all of them
+	# do not.
+	$obj->{order} = $obj_order++ if (!defined($obj->{order}));
+
 	# Done. Rebless into this subclass and invoke any event binding
 	# on the objectLoaded event.
 	bless $obj, $subclass if ($subclass ne 'Games::Object');
@@ -892,6 +939,34 @@ sub save
 	# Invoke any event bindings.
 	$obj->event('objectSaved', $obj->{id}, file => $file);
 
+}
+
+# Return the object's parent, or set the parent of this object, so as to allow
+# it to inherit attributes. Note that it will not inherit those attributes that
+# have already been defined on the object being parented.
+
+sub parent
+{
+	my $obj = shift;
+
+	if (@_) {
+	    # Before attempting to parent, check for a circular parent list.
+	    # For example, if "->" means "child of", and A->B, B->C, and
+	    # you attempt C->A, this is a circular parent list.
+	    my $parent = shift;
+	    my $next_parent = $parent;
+	    while ($next_parent) {
+		croak "Attempt to parent '$obj->{id}' to '$parent->{id}' " .
+		      "would result in circular parent list"
+		  if ($next_parent->{id} eq $obj->{id});
+		$next_parent = $next_parent->parent();
+	    }
+	    $obj->{parent} = $parent;
+	} elsif (defined($obj->{parent})) {
+	    $obj->{parent};
+	} else {
+	    undef;
+	}
 }
 
 ###
@@ -1170,6 +1245,47 @@ sub _protect_attrs
 	}
 }
 
+# Find an attribute. This performs inheritance logic to find a viable attribute
+# no matter where it resides.
+#
+# In a scalar context, it simply returns the hash ref of the attribute. In
+# an array context, it returns a list consisting of the hash ref and a flag
+# indicating whether this was inherited or not.
+
+sub _find_attr
+{
+	my ($obj, $aname) = @_;
+	my $aobj = $obj;
+	my $attr;
+	my $inherited = 0;
+	while (!$attr && $aobj) {
+	    if (defined($aobj->{attr}{$aname})) {
+		# Found attribute.
+		$attr = $aobj->{attr}{$aname};
+		$inherited = ( $aobj->{id} ne $obj->{id} );
+		if ($inherited && $attr->{flags} & ATTR_NO_INHERIT) {
+		    # But it was found on a parent, and we're not allowed
+		    # to inherit this attribute, so this is as good as not
+		    # being defined at all. Note that we leave $inherited
+		    # set, so the caller can tell if we failed to find it
+		    # because it did not exist or could not be inherited, in
+		    # case that makes a difference to the caller.
+		    undef $attr;
+		    last;
+		}
+	    } elsif (defined($aobj->{parent})) {
+		# We have a parent, so check it.
+		$aobj = $aobj->{parent};
+	    } else {
+		# No more parents up the line, so we stop.
+		undef $aobj;
+	    }
+	}
+
+	# Return the result
+	wantarray ? ( $attr, $inherited ) : $attr;
+}
+
 ####
 ## ATTRIBUTE METHODS
 
@@ -1304,7 +1420,8 @@ sub new_attr
 	$obj;
 }
 
-# Delete an attribute.
+# Delete an attribute. Note that this will delete only on the current object
+# and not inherited attributes.
 
 sub del_attr
 {
@@ -1325,8 +1442,18 @@ sub del_attr
 
 sub attr_exists
 {
-	my $obj = shift;
-	my ($aname) = @_;
+	my ($obj, $aname) = @_;
+	my $attr = $obj->_find_attr($aname);
+
+	defined($attr);
+}
+
+# Check specifically that the attribute exists on this object and don't
+# consider inheritance.
+
+sub attr_exists_here
+{
+	my ($obj, $aname) = @_;
 
 	defined($obj->{attr}{$aname});
 }
@@ -1338,11 +1465,11 @@ sub attr
 	my ($obj, $aname, $prop) = @_;
 	$prop = 'value' if (!defined($prop));
 
-	# Check to see if attribute exists.
-	return undef if (!defined($obj->{attr}{$aname}));
+	# If the attribute does not exist, simply return undef.
+	my $attr = $obj->_find_attr($aname);
+	return undef if (!defined($attr));
 
 	# Check to see if the property exists.
-	my $attr = $obj->{attr}{$aname};
 	croak("Attribute '$aname' does not have property called '$prop'")
 	  if (!defined($attr->{$prop}));
 
@@ -1386,10 +1513,10 @@ sub raw_attr
 	$prop = 'value' if (!defined($prop));
 
 	# Check to see if attribute exists.
-	return undef if (!defined($obj->{attr}{$aname}));
+	my $attr = $obj->_find_attr($aname);
+	return undef if (!defined($attr));
 
 	# Check to see if the property exists.
-	my $attr = $obj->{attr}{$aname};
 	croak("Attribute '$aname' does not have property called '$prop'")
 	  if (!defined($attr->{$prop}));
 
@@ -1404,8 +1531,8 @@ sub attr_ref
 	my ($obj, $aname, $prop) = @_;
 
 	$prop = 'value' if (!defined($prop));
-	if (defined($obj->{attr}{$aname})) {
-	    my $attr = $obj->{attr}{$aname};
+	my $attr = $obj->_find_attr($aname);
+	if (defined($attr)) {
 	    defined($attr->{$prop}) ? \$attr->{$prop} : undef;
 	} else {
 	    carp "WARNING: Attempt to get reference to '$prop' of " .
@@ -1473,22 +1600,34 @@ sub mod_attr
 	    return scalar(@ids);
 	}
 
-	# Fetch parameters. We have to do a lot of verification ourselves of
-	# the parameters, since there are so many possible combinations. Thus
-	# only the attribute ID itself is required, and we need that first
-	# before we can check some of the other args, hence the multiple
-	# calls to FetchParams().
+	# The first thing we need to is actually find the attribute. If the
+	# attribute cannot be found on this object, we check to see if it
+	# has a parent, and keep checking up the parent tree until we find
+	# it.
 	FetchParams(\@_, \%args, [
 	    [ 'req', 'name' ],
 	], 1 );
 	my $aname = $args{name};
+	my ($attr, $inherited) = $obj->_find_attr($aname);
 	croak("Attempt to modify unknown attribute '$aname' " .
-		"on object $obj->{id}") if (!defined($obj->{attr}{$aname}));
-	my $attr = $obj->{attr}{$aname};
+		"on object $obj->{id}") if (!defined($attr) && !$inherited);
+	croak("Attempt to modify attribute '$aname' that could not be " .
+	      "inherited") if (!defined($attr) && $inherited);
 
 	# Check for attempt to modify static attribute.
-	croak("Attempt to modify static attr '$aname' on '$obj->{id}'")
+	croak("Attempt to modify static attr '$aname' on '$obj->{id}' " .
+	      ( $inherited ? "(inherited)" : "(not inherited)" ) )
 	    if ($attr->{flags} & ATTR_STATIC);
+
+	# If we inherited this attribute, then clone it so that we have
+	# our own copy.
+	if ($inherited) {
+	    $obj->{attr}{$aname} = {};
+	    foreach my $key (keys %$attr) {
+		$obj->{attr}{$aname}{$key} = $attr->{$key};
+	    }
+	    $attr = $obj->{attr}{$aname};
+	}
 
 	# Fetch basic modifier parameters.
 	%args = ();
@@ -1575,19 +1714,21 @@ sub mod_attr
 	        [ 'opt', 'delay',       0,	'int' ],
 	        [ 'opt', 'force',       0,      'boolean' ],
 	        [ 'opt', 'incremental', 0,      'boolean' ],
+		[ 'opt', 'apply_now',	0,	'boolean' ],
 	    ] );
 
 	    # Is to be persistent?
-	    if (defined($args{persist_as})) {
+	    my ($id, $was_pmod, $mod);
+	    if ($args{persist_as}) {
 
 		# Yes, so don't do the change right now. Simply add it as
 		# a new persistent modifier (pmod). If one already exists,
 		# then replace it silently. The index value is used in sorting,
 		# so that when pmods of equal priority are placed in the object,
 		# they are guaranteed to run in the order they were created.
-		my $id = $args{persist_as};
-		my $was_pmod = defined($obj->{pmod}{$id});
-		my $mod = {
+		$id = $args{persist_as};
+		$was_pmod = defined($obj->{pmod}{$id});
+		$mod = {
 		    aname	=> $aname,
 		    index	=> ( $was_pmod ?
 					$obj->{pmod}{$id}{index} :
@@ -1605,14 +1746,21 @@ sub mod_attr
 		$obj->{pmod}{$id} = $mod;
 		$obj->{pmod_active}++ unless ($was_pmod);
 
-	    } else {
+	    }
 
-		# No, do the change now.
+	    if (!$args{persist_as} || $args{apply_now}) {
+
+		# Either this is NOT a persistent mod, or it IS, but the
+		# user wants to force the change to be applied right now.
 		$args{value} = $attr->{value} + $args{modify}
 		  if (defined($args{modify}));
 		$args{real_value} = $attr->{real_value} + $args{modify_real}
 		  if (defined($args{modify_real}));
 		$obj->_set_attr($aname, %args);
+
+		# And if it is a persistent mod, make sure it does not
+		# get applied twice.
+		$mod->{applied} = 1 if (defined($args{persist_as}));
 
 	    }
 

@@ -182,8 +182,13 @@ sub event_object_destroy {
 ';
 close PKG;
 
-use Games::Object qw(Find Process TotalObjects);
+use Games::Object qw(Find Process TotalObjects $CompareFunction);
 use IO::File;
+
+# This was added in v0.05 so that we can know the order in which objects
+# will process through this test, otherwise test 26 fails on some platforms
+# and Perl versions. This also acts as an indirect test of the new feature.
+$CompareFunction = '_CompareCreationOrder';
 
 # Create an object from the subclassed test module.
 require GOTestModule;

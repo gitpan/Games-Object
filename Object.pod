@@ -13,12 +13,12 @@ Games::Object - Provide a base class for game objects
 	# Create object
 	my $proto = shift;
 	my $class = ref($proto) || $proto;
-	my $self = $class::SUPER->new(@_);
+	my $self = $class->SUPER::new(@_);
 	bless $self, $class;
 
 	# Add attributes
 	$self->new_attr(-name => "hit_points",
-			-type => 'int'
+			-type => 'int',
 			-value => 20,
 			-tend_to_rate => 1);
 	$self->new_attr(-name => "strength",
@@ -115,44 +115,65 @@ in the URL "file://I<filename>".
 
 =head1 CHANGES
 
-The current version is 0.04 (alpha). The following are the changes from last
+The current version is 0.05 (alpha). The following are the changes from last
 version:
 
 =over 4
 
 =item *
 
-This module now requires a minimum Perl version of 5.6.0.
+A new option has been added to force processing of objects in a more
+deterministic fashion when the priorities are the same.
 
 =item *
 
-Added ability to assert validity of ID in Find() and fail if not valid.
+Fixed an incorrect assumption in the event.t module that was causing bogus
+test failures under Perl 5.8.0. Thanks to the diligent CPAN testers for
+finding this.
 
 =item *
 
-Added the Id() function to achieve similar assertion functionality.
+Persistent modifiers can now be forced to take effect immediately rather than
+the next time the object is processed. This change helps alleviate the timing
+issue that arises in the process() call.
 
 =item *
 
-Added the objectDestroyed event, triggered when destroy() is called on
-an object.
+Fixed a few errors in some of the code examples in the POD doc. Thanks to
+Bryce Harrington for pointing these out.
 
 =item *
 
-Added attr_ref() to allow attributes to be used in -textvariable
-and -variable options in Perl Tk widgets.
+The I<track> option is now implemented (it actually was implemented all along,
+but ... well, it's a long story).
 
 =item *
 
-Fixed bug in load() that caused an annoying but harmless "substr
-outside of string" warning under -w if the save file had undefined
-hash values.
+What was previously indicated as a bug with regards to persistent modifiers
+and self-limited attributes is simply a consequence of the options used on
+the attributes. An extra subsection has been added to better explain the
+interaction.
 
 =item *
 
-Documented the attribute flags and added flag ATTR_AUTOCREATE.
+Objects can be parented to one another to allow inheritance of attribute values
+not explicitly set on child object. This allows a game programmer to create
+object classes and reduce memory consumption for shared attributes.
+
+=item *
+
+B<The author's email address has changed.> Please make a note of it at
+the end of this document.
 
 =back
+
+=head1 COMPATIBILITY
+
+This version is compatible with version 0.04 save files, though you may note
+that a load and subsequent save of the same data will result in a slightly
+larger file. This is due to an additional attribute being added to the
+objects to support the new feature of deterministic processing order for
+same-prioritied objects.
 
 =head1 DESCRIPTION
 
@@ -577,7 +598,10 @@ changed.
 
 Operates like I<use_up>, except that the excess is tracked internally.
 Subsequent attempts to modify the attribute the other way will have to use
-up this amount first B<[NOTE: This is currently not implemented]>.
+up this amount first.
+
+Using the I<track> option when creating the attribute is exactly like specifying
+the I<-force> option to every call to C<mod_attr()>.
 
 =back
 
@@ -860,6 +884,12 @@ Always initialized to undef. This behavior may change in the future.
 Think of this feature as similar to autovivication, but extended to the
 attributes.
 
+=item ATTR_NO_INHERIT
+
+Do not allow objects parented to this one to inherit this attribute. It will
+act as if the attribute does not exist. See the section
+L<"Attribute inheritance"> for details on how this works.
+
 =back
 
 Here is an example of creating an attribute that will not be saved to a file
@@ -1096,6 +1126,23 @@ call is made is the modifier removed.
 A self-limiting modifier can still be manually cancelled like any other
 persistent modifier.
 
+=item Applying persistent modifier effects immediately
+
+As stated above, the usual behavior of persistent modifiers is that they
+do not take effect immediately, but rather when the next process() call is
+made on the object.
+
+With version 0.05 of Games::Object, you can force a persistent modifier to
+take effect immediately. This is done by using the I<-apply_now> option to
+the mod_attr() call. Setting this to a true value will cause mod_attr()
+to apply the effects of the modifier right now. This also means that any
+events associated with modifying the attribute will be triggered at this
+time.
+
+Be careful when using this feature with incremental modifiers. This means
+that the target attribute will be modified now, and then again when the
+process() is next called on the object.
+
 =item Delayed-action modifiers
 
 A persistent modifier, either one that is timed or not, can be set up such
@@ -1172,6 +1219,12 @@ to 110, even though the current maximum is 100:
 		   -persist_as => "spell:super_endurance",
 		   -force => 1);
 
+At the same time, however, a call to C<attr()> to return the value of the
+attribute will still only return values in the range of 0 to 100. This can
+be very useful in that you can allow modifications to go above or below
+the bounds internally, but still allow only the proper ranges from the
+point of view of the program.
+
 =head2 Modifying attribute properties
 
 Various properties of an attribute normally set at the time the attribute is
@@ -1192,6 +1245,115 @@ To delete an attribute, use the C<del_attr()> method:
 
 This removes the attribute immediately. Any persistent modifiers on this
 attribute are removed at the same time.
+
+=head2 Attribute inheritance
+
+This is a new feature introduced in version 0.05 of the module. This feature
+allows you to share common attributes among multiple objects without the need
+to store the attribute on each and every object, or to set default values for
+attributes until such time that it is defined or modified on the object.
+
+To allow an object to inherit the attributes of another, you need to set that
+object's I<parent>. This is done with the C<parent()> method. For example,
+say you were designing a game that had lots of dragons modeled after a
+particular class, in which many attributes were shared among them. You could
+do something like this:
+
+    my $class = Games::Object->new(-id => "Class Dragon");
+    $class->new_attr(-name => "hit_points",
+		     -type => "int",
+		     -value => 50);
+    ...
+
+    my $dragon = Games::Object->new(-id => "Red Dragon");
+    $dragon->parent($class);
+
+If you do no further processing with the C<$dragon> object, you can access
+all the attributes defined on C<$class> from here. For example, this:
+
+    my $hp = $dragon->attr("hit_points");
+
+would set C<$hp> to 50. For all intents and purposes, C<hit_points> exists
+on C<$dragon>. Even C<attr_exists()> will tell you that the attribute exists
+even though it is really getting it from C<$class>. If you really need to
+tell whether the attribute really physically exists on the object as
+opposed to being inherited, you can call C<attr_exists_here()> instead. In
+the above example, this method would return false.
+
+Inheritance ceases, however, the moment you modify the attribute. In this case,
+the attribute becomes localized to the child object. If you performed a
+relative modification, it is made relative to the current value of the
+inherited attribute at the time it was modified. For example, if you did this:
+
+    $dragon->mod_attr(-name => "hit_points",
+		      -modify => -8);
+
+Then C<$dragon> will now have its own copy of C<hit_points> set to 42.
+C<attr_exists_here()> will return true. However, if at a later time you
+delete the attribute from the child object, it will go back to inheriting
+the attribute from the parent.
+
+You can have mutiple layers of inheritance. For example C<$class> could
+itself be parented to a larger class of objects. When you attempt to access
+an attribute on an object, it will continue checking successive parents until
+it finds a parent object with the attribute defined. This means that defined
+attributes on parents lower down on the chain will mask the values of those
+higher up the chain.
+
+It should be noted that persistent modifiers are NOT inherited. If C<$class>
+has a persistent modifier on C<hit_points> that decreased it by 1 each turn,
+C<$dragon> would see this change in the attribute until such time that it
+attempted a modify, in which case it has its own local copy that has no
+persistent modifiers on it.
+
+You can choose to prohibit objects from inheriting an attribute. In order
+to do this, set the C<ATTR_NO_INHERIT> flag on the attribute when you create
+it on the parent. It will be treated as if it does not exist. You will need
+to import this symbol into your code if you need it, since it is not exported
+by default.
+
+Also be aware that the C<ATTR_STATIC> flag is honored for inherited attributes.
+This means if the parent has an attribute that is marked C<ATTR_STATIC>, and
+the inheriting child attempts to modify it, this will be treated as an error
+just as if you attempted to modify it on the parent directly.
+
+=head2 A note on using I<-minimum>/I<-maximum> and persistent modifiers
+
+If you choose to use persistent modifiers combined with self-limiting
+attributes, there are a few pitfalls that you need to watch out for.
+
+By default, modifications made to an attribute are done in the I<use_up>
+mode. This means that any modifications beyond what is needed to bring the
+value to minimum or maximum is discarded. When combined with persistent
+modifiers, this may not result in what you want.
+
+For example, say you have an attribute that ranges from 0 to 100 and is
+currently at 95. It was created with the default I<use_up> option for its
+I<-out_of_bounds> parameter. Say you apply a persistent modifier of 10 with
+no special options. Because of the I<use_up> option, only 5 is added to the
+value, resulting in 100. If later you cancel the modifier, or it was timed
+and expires, it will apply -10 to the value, bringing it down to 90. This
+is probably not what you intended.
+
+This problem can be solved one of two ways:
+
+=over 4
+
+=item *
+
+Use the I<-force> option in the C<mod_attr()> call. This will force the
+attribute to 105 internally, but a normal call to C<attr()> will return 100.
+
+=item *
+
+Specify the I<track> option with the I<-out_of_bounds> parameter when the
+attribute was created. This will do the same thing, i.e. allow the value to
+increase intenally to 105 but report 100 to the user.
+
+=back
+
+In retrospect, it appears that perhaps I<track> is better as the default
+rather than I<use_up>.
 
 =head1 Events
 
@@ -1695,10 +1857,10 @@ then new mods added from events generated there will be processing this
 turn (since process_pmod() has not yet run), but ones generated from
 process_pmod() will not.
 
-This problem is considered to be a design flaw. Expect this to change in
-later versions of this module. Either the processing model will be adjusted,
-or a means of detecting when mods are added from these events and performing
-the magic behind the scenes to fix the problem will be devised.
+You can work around this problem via the I<-apply_now> option introduced
+in 0.05. Setting this to a true value in your C<mod_attr()> call from the
+event handler will cause the modifier to be applied immediately, as if it had
+been generated before the process() call.
 
 =head2 Processing all objects
 
@@ -1788,6 +1950,44 @@ B<NOTE: Avoid using extremely large or extremely small priority numbers.>
 Keep your priority numbers in the range of -999_999_999 to +999_999_999,
 which should be more than sufficient. Values outside this range are reserved
 for internal use.
+
+=head2 Controlling order of same-priority objects
+
+Starting in version 0.05 of this module, you can force the module to
+process objects in a more deterministic fashion when the priority values
+are the same. This can be controlled by modifying the exportable variable
+C<$CompareFunction>.
+
+Specifically, this contains the name of a sort subroutine to be passed to
+the Perl C<sort()> function. By default this is set to the string
+C<_CompareDefault>, which reproduces the behavior in 0.04 and prior versions.
+In this manner, compatibility is preserved with previous versions.
+
+If you set C<$CompareFunction> to the string C<_CompareCreationOrder>,
+then objects will be processed in the order that they were created when the
+priorities are the same.
+
+Because the value of C<$CompareFunction> is passed to the sort routine verbatim,
+you could theoretically place any function you wish in this variable,
+including one you define in your main program, though be sure to prefix
+it with C<main::>. Example:
+
+  use strict;
+  use Games::Object qw($CompareFunction);
+
+  sub MyCompare {
+    # Compare like the normal function (larger priorities go first)
+    # but when same, pick randomly.
+    my $cmp = $b->priority() <=> $a->priority();
+    $cmp == 0 ? ( rand(100) < 50 ? 1 : -1 ) : $cmp;
+  }
+
+  $CompareFunction = 'main::MyCompare';
+
+B<Important note:> This method of altering the sort order is most effective
+when you load and save all of your game objects at the same time. Partial
+loads, saves, and creation of new objects may not lead to a consistent
+object ordering.
 
 =head2 Attribute tend-to priority
 
@@ -1933,16 +2133,6 @@ functionality fully working and documented in the beta.
 
 =head1 BUGS
 
-Cancelling a persistent modifier that attempted to modify a value past its
-min or max and only had part of the modifier applied will remove the entire
-modifier. For example, if a persistent modifier of 10 is applied to an attribute
-at 95, and the attribute is set to option use_up with a max of 100, the
-attribute is raised only to 100. Yet when the modifier is cancelled, the
-attribute is lowered to 90. This is probably not what you want.
-
-There is a design flaw in the C<process()> logic. See L<"Timing Issues"> for
-more details.
-
 There are probably lots of other bugs, since this IS an alpha release, but
 these are the only one known at this time.
 
@@ -1952,7 +2142,7 @@ directly tested (though many are indirectly tested).
 =head2 If you find a bug not documented above
 
 Please send email to the author of the module at Peter J. Stewart
-E<lt>stwrtpj@earthlink.netE<gt> with a description of the bug.
+E<lt>p.stewart@attbi.com<gt> with a description of the bug.
 Please include any error messages you may have received. Snippets of code
 that trigger the bug would be helpful as well.
 
@@ -1962,16 +2152,10 @@ I will be investigating replacing the bulk of the load() and save() code with
 hooks into the Storable module. I had not known about this module until after
 I had coded much of Games::Object. Look for this possibly in the beta version.
 
-There needs to be an option to mod_attr() that forces a persistent mod to
-take effect immediately.
-
 Cloning an object would be useful functionality to have.
 
-Processing order for objects in C<Process()> needs to be more consistent with
-attribute persistent mods. The former has no defined order when priorities
-are the same, while the latter specifies the order in which the mods were
-added. What might be nice would be a way to choose a truly random order
-for processing.
+Processing order for objects has improved, but still could use some more
+extensions.
 
 There needs to be a way to "encode" the game save data. Right now its in
 clear ASCII, which would make it easy to cheat. Using Storable might mitigate
@@ -1985,8 +2169,10 @@ which some arbitrary expression evaluates to true) would be useful.
 
 =head1 AUTHOR
 
+B<Note to users of previous versions:> I have a new email address.
+
 Please send all comments and bug reports to Peter J. Stewart
-E<lt>stwrtpj@earthlink.netE<gt>. Also feel free to drop me a comment if
+E<lt>p.stewart@attbi.comE<gt>. Also feel free to drop me a comment if
 you decided to use this module for designing a game. It will help me plan
 for future functionality.
 

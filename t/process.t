@@ -8,7 +8,7 @@
 use strict;
 use Test;
 
-BEGIN { $| = 1; plan tests => 38 }
+BEGIN { $| = 1; plan tests => 43 }
 
 # Write a small Perl module that we will use to subclass to Games::Object
 use File::Basename;
@@ -87,34 +87,75 @@ eval('$obj->new_attr(
     -minimum	=> 0,
     -maximum	=> 100,
     -tend_to_rate=> 1,
+    -priority	=> 2,
 )');
 ok( $@ eq '' );
 
-# Process it. Insure that we see the event that the attribute was modified.
+# Define a second attribute
+eval('$obj->new_attr(
+    -name	=> "SomeOtherNumber",
+    -type	=> "number",
+    -value	=> 70,
+    -real_value	=> 150,
+    -minimum	=> 0,
+    -maximum	=> 150,
+    -tend_to_rate=> 2,
+    -priority	=> 1,
+)');
+ok( $@ eq '' );
+
+# Process it. Insure that we see in the event that the attribute was modified.
 $obj->process();
 ok( $obj->attr('SomeNumber') == 51 );
-ok( @GOTestModule::RESULTS == 1
+ok( $obj->attr('SomeOtherNumber') == 72 );
+ok( @GOTestModule::RESULTS == 2
  && $GOTestModule::RESULTS[0]{event} eq 'attrValueModified'
  && $GOTestModule::RESULTS[0]{key} eq 'SomeNumber'
  && $GOTestModule::RESULTS[0]{old} == 50
  && $GOTestModule::RESULTS[0]{new} == 51
  && $GOTestModule::RESULTS[0]{method} eq "mod_event"
- && $GOTestModule::RESULTS[0]{foo} eq 'bar' );
+ && $GOTestModule::RESULTS[0]{foo} eq 'bar'
+ && $GOTestModule::RESULTS[1]{event} eq 'attrValueModified'
+ && $GOTestModule::RESULTS[1]{key} eq 'SomeOtherNumber'
+ && $GOTestModule::RESULTS[1]{old} == 70
+ && $GOTestModule::RESULTS[1]{new} == 72
+ && $GOTestModule::RESULTS[1]{method} eq "mod_event"
+ && $GOTestModule::RESULTS[1]{foo} eq 'bar' );
 @GOTestModule::RESULTS = ();
 
-# Add a persisent static modifier. It should not be applied until process()
-# is called. Also, it should be applied only once. Note, however, that there
-# will be two modify events.
+# Add a persisent static modifier to SomeNumber. Do the same for
+# SomeOtherNumber, but force it to take effect now.
 eval('$obj->mod_attr(
     -name	=> "SomeNumber",
     -modify	=> 10,
     -persist_as	=> "StaticModifier",
 )');
+eval('$obj->mod_attr(
+    -name	=> "SomeOtherNumber",
+    -modify	=> 5,
+    -persist_as	=> "StaticModifierDoNow",
+    -apply_now	=> 1,
+)');
 ok( $@ eq '' );
 ok( $obj->attr('SomeNumber') == 51 );
+ok( $obj->attr('SomeOtherNumber') == 77 );
+# And the modification for SomeOtherNumber should already have triggered
+# a modify event already.
+ok( @GOTestModule::RESULTS == 1
+ && $GOTestModule::RESULTS[0]{event} eq 'attrValueModified'
+ && $GOTestModule::RESULTS[0]{key} eq 'SomeOtherNumber'
+ && $GOTestModule::RESULTS[0]{old} == 72
+ && $GOTestModule::RESULTS[0]{new} == 77
+ && $GOTestModule::RESULTS[0]{method} eq "mod_event"
+ && $GOTestModule::RESULTS[0]{foo} eq 'bar' );
+# Clear the events results and process object. For SomeNumber, we should
+# see both the tend-to modify and the pmod. For SomeOtherNumber, we should
+# see ONLY the former.
+@GOTestModule::RESULTS = ();
 $obj->process();
 ok( $obj->attr('SomeNumber') == 62 );
-ok( @GOTestModule::RESULTS == 2
+ok( $obj->attr('SomeOtherNumber') == 79 );
+ok( @GOTestModule::RESULTS == 3
  && $GOTestModule::RESULTS[0]{event} eq 'attrValueModified'
  && $GOTestModule::RESULTS[0]{key} eq 'SomeNumber'
  && $GOTestModule::RESULTS[0]{old} == 51
@@ -126,11 +167,22 @@ ok( @GOTestModule::RESULTS == 2
  && $GOTestModule::RESULTS[1]{old} == 61
  && $GOTestModule::RESULTS[1]{new} == 62
  && $GOTestModule::RESULTS[1]{method} eq "mod_event"
- && $GOTestModule::RESULTS[1]{foo} eq 'bar' );
+ && $GOTestModule::RESULTS[1]{foo} eq 'bar'
+ && $GOTestModule::RESULTS[2]{event} eq 'attrValueModified'
+ && $GOTestModule::RESULTS[2]{key} eq 'SomeOtherNumber'
+ && $GOTestModule::RESULTS[2]{old} == 77
+ && $GOTestModule::RESULTS[2]{new} == 79
+ && $GOTestModule::RESULTS[2]{method} eq "mod_event"
+ && $GOTestModule::RESULTS[2]{foo} eq 'bar' );
 @GOTestModule::RESULTS = ();
 $obj->process();
 ok( $obj->attr('SomeNumber') == 63 );
 @GOTestModule::RESULTS = ();
+
+# Note that from this point on in the test, we do not always check the
+# parameters of the SomeOtherNumber mods, since it was added largely to
+# test the -apply_now feature, but it is reflected in the total number
+# of events.
 
 # Add another persistent modifier, this time to the real value that places it
 # below the current value. Process it and see that the tend-to reverses sense.
@@ -144,7 +196,7 @@ ok( $obj->attr('SomeNumber', 'real_value') == 100 );
 $obj->process();
 ok( $obj->attr('SomeNumber', 'real_value') == 20
  && $obj->attr('SomeNumber') == 62 );
-ok( @GOTestModule::RESULTS == 2
+ok( @GOTestModule::RESULTS == 3
  && $GOTestModule::RESULTS[0]{event} eq 'attrRealValueModified'
  && $GOTestModule::RESULTS[0]{key} eq 'SomeNumber'
  && $GOTestModule::RESULTS[0]{old} == 100
@@ -170,7 +222,7 @@ ok( $obj->attr("SomeNumber") == 62
 $obj->process();
 ok( $obj->attr("SomeNumber") == 51
  && $obj->attr("SomeNumber", 'real_value') == 20 );
-ok( @GOTestModule::RESULTS == 2
+ok( @GOTestModule::RESULTS == 3
  && $GOTestModule::RESULTS[0]{event} eq 'attrValueModified'
  && $GOTestModule::RESULTS[0]{key} eq 'SomeNumber'
  && $GOTestModule::RESULTS[0]{old} == 62
@@ -201,7 +253,7 @@ ok( $obj->attr('SomeNumber') == 51
 $obj->process();
 ok( $obj->attr('SomeNumber') == 52
  && $obj->attr('SomeNumber', 'real_value') == 70
- && @GOTestModule::RESULTS == 2 );
+ && @GOTestModule::RESULTS == 3 );
 @GOTestModule::RESULTS = ();
 
 # Process two more times. The real value should not change.
@@ -209,14 +261,14 @@ $obj->process();
 $obj->process();
 ok( $obj->attr('SomeNumber') == 54
  && $obj->attr('SomeNumber', 'real_value') == 70
- && @GOTestModule::RESULTS == 2 );
+ && @GOTestModule::RESULTS == 4 );
 @GOTestModule::RESULTS = ();
 
 # Process one more time. Now the second modifier should be gone.
 $obj->process();
 ok( $obj->attr('SomeNumber') == 53
  && $obj->attr('SomeNumber', 'real_value') == 20
- && @GOTestModule::RESULTS == 2
+ && @GOTestModule::RESULTS == 3
  && $GOTestModule::RESULTS[0]{event} eq 'attrRealValueModified'
  && $GOTestModule::RESULTS[1]{event} eq 'attrValueModified' );
 @GOTestModule::RESULTS = ();
@@ -234,7 +286,7 @@ ok( $obj->attr('SomeNumber') == 100
 # Process the events associated with it.
 $obj->process();
 ok( $obj->attr('SomeNumber') == 99
- && @GOTestModule::RESULTS == 3
+ && @GOTestModule::RESULTS == 4
  && $GOTestModule::RESULTS[0]{event} eq 'attrValueAttemptedOutOfBounds'
  && $GOTestModule::RESULTS[0]{foo} eq 'borf'
  && $GOTestModule::RESULTS[1]{event} eq 'attrValueModified'

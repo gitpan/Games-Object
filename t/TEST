@@ -6,6 +6,7 @@ use Test::Harness;
 runtests(
     './create.t',
     './attr.t',
+    './inherit.t',
     './flag.t',
     './event.t',
     './process.t',

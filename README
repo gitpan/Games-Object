@@ -1,13 +1,14 @@
-Games/Object version 0.04
+Games/Object version 0.05
 =========================
 
-IMPORTANT NOTE TO USERS OF PREVIOUS VERSIONS
+IMPORTANT NOTE TO USERS OF VERSIONS BEFORE 0.04
 
 This module now requires Perl 5.6.0. I thought initially that I would have
 an environment in which to test it in 5.005, but this will not be the case, and
 I do not wish to install it on my home machine. In addition, the upcoming
-release of Games::TileMap, which is dependent on this module, will require
-5.6.0 for other reasons, and I wanted to make everything consistent.
+release of Games::TileMap (really, it WILL be released -- I almost have enough
+tuits collected), which is dependent on this module, will require 5.6.0 for
+other reasons, and I wanted to make everything consistent.
 
 Anyway, 5.6.0 has been out there for a long time. It's time to let go of
 the past :)
@@ -100,7 +101,7 @@ Perl core modules.
 
 BUG REPORTS
 
-This is an ALPHA release. Please send all bug reports to stwrtpj@earthlink.net.
+This is an ALPHA release. Please send all bug reports to p.stewart@attbi.com.
 Suggestions at future functionality are also welcome.
 
 

@@ -7,6 +7,6 @@ WriteMakefile(
     'PREREQ_PM'		=> {},
     ( $] >= 5.005 ?
       ( ABSTRACT_FROM	=> 'Object.pod',
-        AUTHOR     	=> 'Peter J. Stewart <stwrtpj@earthlink.net>') : ()
+        AUTHOR     	=> 'Peter J. Stewart <p.stewart@attbi.com>') : ()
       ),
 );
