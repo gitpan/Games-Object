@@ -1,6 +1,9 @@
 # -*- perl -*-
 
-# Processing and events
+# Processing
+
+# Note that while this has some event processing in it, it is not a full
+# test of events. Look at event.t for that.
 
 use strict;
 use Test;
@@ -34,6 +37,7 @@ sub mod_event {
     my %args = @_;
     $args{method} = "mod_event";
     push @RESULTS, \%args;
+    1;
 }
 
 sub mod_real_event {
@@ -41,6 +45,7 @@ sub mod_real_event {
     my %args = @_;
     $args{method} = "mod_real_event";
     push @RESULTS, \%args;
+    1;
 }
 
 sub mod_oob {
@@ -48,13 +53,14 @@ sub mod_oob {
     my %args = @_;
     $args{method} = "mod_oob";
     push @RESULTS, \%args;
+    1;
 }
 
 1;
 ';
 close PKG;
 
-use Games::Object qw(RegisterEvent);
+use Games::Object;
 use IO::File;
 
 # Create an object from the subclassed test module.
@@ -63,13 +69,13 @@ my $obj = GOTestModule->new();
 ok( defined($obj) && $obj->isa('Games::Object') );
 
 # Register some event handlers.
-eval('RegisterEvent("attrValueModified", "mod_event", foo => "bar")');
+eval('$obj->bind_event("attrValueModified", [ "mod_event", foo => "bar" ])');
 ok( $@ eq '' );
-eval('RegisterEvent("attrRealValueModified", "mod_real_event", foo => "blork")');
+eval('$obj->bind_event("attrRealValueModified", [ "mod_real_event", foo => "blork" ])');
 ok( $@ eq '' );
-eval('RegisterEvent("attrValueAttemptedOutOfBounds", "mod_event", foo => "borf")');
+eval('$obj->bind_event("attrValueAttemptedOutOfBounds", [ "mod_event", foo => "borf" ])');
 ok( $@ eq '' );
-eval('RegisterEvent("attrValueOutOfBounds", "mod_event", foo => "blub")');
+eval('$obj->bind_event("attrValueOutOfBounds", [ "mod_event", foo => "blub" ])');
 ok( $@ eq '' );
 
 # Define an attribute.
@@ -89,7 +95,7 @@ $obj->process();
 ok( $obj->attr('SomeNumber') == 51 );
 ok( @GOTestModule::RESULTS == 1
  && $GOTestModule::RESULTS[0]{event} eq 'attrValueModified'
- && $GOTestModule::RESULTS[0]{name} eq 'SomeNumber'
+ && $GOTestModule::RESULTS[0]{key} eq 'SomeNumber'
  && $GOTestModule::RESULTS[0]{old} == 50
  && $GOTestModule::RESULTS[0]{new} == 51
  && $GOTestModule::RESULTS[0]{method} eq "mod_event"
@@ -110,13 +116,13 @@ $obj->process();
 ok( $obj->attr('SomeNumber') == 62 );
 ok( @GOTestModule::RESULTS == 2
  && $GOTestModule::RESULTS[0]{event} eq 'attrValueModified'
- && $GOTestModule::RESULTS[0]{name} eq 'SomeNumber'
+ && $GOTestModule::RESULTS[0]{key} eq 'SomeNumber'
  && $GOTestModule::RESULTS[0]{old} == 51
  && $GOTestModule::RESULTS[0]{new} == 61
  && $GOTestModule::RESULTS[0]{method} eq "mod_event"
  && $GOTestModule::RESULTS[0]{foo} eq 'bar'
  && $GOTestModule::RESULTS[1]{event} eq 'attrValueModified'
- && $GOTestModule::RESULTS[1]{name} eq 'SomeNumber'
+ && $GOTestModule::RESULTS[1]{key} eq 'SomeNumber'
  && $GOTestModule::RESULTS[1]{old} == 61
  && $GOTestModule::RESULTS[1]{new} == 62
  && $GOTestModule::RESULTS[1]{method} eq "mod_event"
@@ -140,13 +146,13 @@ ok( $obj->attr('SomeNumber', 'real_value') == 20
  && $obj->attr('SomeNumber') == 62 );
 ok( @GOTestModule::RESULTS == 2
  && $GOTestModule::RESULTS[0]{event} eq 'attrRealValueModified'
- && $GOTestModule::RESULTS[0]{name} eq 'SomeNumber'
+ && $GOTestModule::RESULTS[0]{key} eq 'SomeNumber'
  && $GOTestModule::RESULTS[0]{old} == 100
  && $GOTestModule::RESULTS[0]{new} == 20
  && $GOTestModule::RESULTS[0]{method} eq "mod_real_event"
  && $GOTestModule::RESULTS[0]{foo} eq 'blork'
  && $GOTestModule::RESULTS[1]{event} eq 'attrValueModified'
- && $GOTestModule::RESULTS[1]{name} eq 'SomeNumber'
+ && $GOTestModule::RESULTS[1]{key} eq 'SomeNumber'
  && $GOTestModule::RESULTS[1]{old} == 63
  && $GOTestModule::RESULTS[1]{new} == 62
  && $GOTestModule::RESULTS[1]{method} eq "mod_event"
@@ -166,13 +172,13 @@ ok( $obj->attr("SomeNumber") == 51
  && $obj->attr("SomeNumber", 'real_value') == 20 );
 ok( @GOTestModule::RESULTS == 2
  && $GOTestModule::RESULTS[0]{event} eq 'attrValueModified'
- && $GOTestModule::RESULTS[0]{name} eq 'SomeNumber'
+ && $GOTestModule::RESULTS[0]{key} eq 'SomeNumber'
  && $GOTestModule::RESULTS[0]{old} == 62
  && $GOTestModule::RESULTS[0]{new} == 52
  && $GOTestModule::RESULTS[0]{method} eq "mod_event"
  && $GOTestModule::RESULTS[0]{foo} eq 'bar'
  && $GOTestModule::RESULTS[1]{event} eq 'attrValueModified'
- && $GOTestModule::RESULTS[1]{name} eq 'SomeNumber'
+ && $GOTestModule::RESULTS[1]{key} eq 'SomeNumber'
  && $GOTestModule::RESULTS[1]{old} == 52
  && $GOTestModule::RESULTS[1]{new} == 51
  && $GOTestModule::RESULTS[1]{method} eq "mod_event"
@@ -182,7 +188,7 @@ ok( @GOTestModule::RESULTS == 2
 # Put another modifier on the real value that brings it above the current
 # again, but make this one timed. Make sure everything works. Until we come
 # to OOB testing, we'll just be checking that the number of events processed
-# is correct, since we pretty much exercised the event functionality.
+# is correct, since we pretty much exercised the basic event functionality.
 eval('$obj->mod_attr(
     -name	=> "SomeNumber",
     -modify_real	=> 50,

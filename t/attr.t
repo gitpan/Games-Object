@@ -182,7 +182,8 @@ eval('$obj->mod_attr(
 ok ( $obj->attr("AnotherLimitedNumber") == 25.67 );
 
 # Object references (a very basic test only; more extensive testing can be found
-# in class.t; this just tests storage and badic data conversion ID <-> ref)
+# in other test scripts; this just tests storage and badic data conversion
+# ID <-> ref)
 my $robj1 = Games::Object->new(-id => "SampleObject1");
 my $robj2 = Games::Object->new(-id => "SampleObject2");
 my $res;

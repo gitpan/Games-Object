@@ -67,3 +67,5 @@ ok( $@ eq '' );
 my $obj3 = Games::Object->new();
 ok( $obj3->is('this') );
 ok( !$obj3->maybe('that', 'the_other', 'some_other') );
+
+exit (0);

@@ -7,6 +7,7 @@ runtests(
     './create.t',
     './attr.t',
     './flag.t',
+    './event.t',
     './process.t',
     './priority.t',
     './loadsave.t',

@@ -10,16 +10,16 @@ use IO::File;
 
 use vars qw($VERSION @EXPORT_OK %EXPORT_TAGS @ISA);
 
-$VERSION = "0.02";
+$VERSION = "0.03";
 @ISA = qw(Exporter);
 @EXPORT_OK = qw(TotalObjects CreateFlag ModifyFlag Find RegisterEvent Process
-		LockAttrMods UnlockAttrMods SetProcessList
-		FetchParams RegisterClass IsClassRegistered
-		ATTR_STATIC ATTR_DONTSAVE);
+		SetProcessList FetchParams RegisterClass IsClassRegistered
+		OBJ_CHANGED OBJ_AUTOALLOCATED OBJ_PLACEHOLDER OBJ_DESTROYED
+		ATTR_STATIC ATTR_DONTSAVE EVENT_NULL_CALLBACK);
 %EXPORT_TAGS = (
     functions		=> [qw(TotalObjects Flag Find RegisterEvent Process
-			       LockAttrMods UnlockAttrMods SetProcessList
-			       FetchParams RegisterClass IsClassRegistered)],
+			       SetProcessList FetchParams
+			       RegisterClass IsClassRegistered)],
     objflags		=> [qw(OBJ_CHANGED OBJ_AUTOALLOCATED
 			       OBJ_PLACEHOLDER OBJ_DESTROYED)],
     attrflags		=> [qw(ATTR_STATIC ATTR_DONTSAVE)],
@@ -30,11 +30,17 @@ $VERSION = "0.02";
 use constant ATTR_STATIC	=> 0x00000001;
 use constant ATTR_DONTSAVE	=> 0x00000002;
 
-# Define object flags
+# Define object flags (internal)
 use constant OBJ_CHANGED        => 0x00000001;
 use constant OBJ_AUTOALLOCATED  => 0x00000002;
 use constant OBJ_PLACEHOLDER    => 0x00000004;
 use constant OBJ_DESTROYED      => 0x00000008;
+
+# Define the null callback string.
+use constant EVENT_NULL_CALLBACK	=> '__NULL_CALLBACK__';
+
+# Define the ID of the global object
+use constant GLOBAL_OBJ_ID	=> 'Games::Object::__GLOBAL__';
 
 # Define a table that instructs this module how to deal with object references
 # upon save and load. In this manner we can handle blessed objects and even
@@ -64,45 +70,34 @@ my $obj_next = 0;
 
 # And if we are doing this, we want to try and use space efficiently by
 # reclaiming unused IDs. Thus we track the lowest available opening.
+# [ NOT YET IMPLEMENTED ]
 my $obj_reclaim = 1;
 my $obj_avail = 0;
+
+# Track the highest priority object so that we can insure the global object
+# is higher.
+my $highest_pri = 0;
 
 # Define storage for user-defined object flags.
 my %user_flag = ();
 
-# Define storage for event action routines. Note that we defined each one
-# ahead of time as an initial do-nothing function so we can use this table
-# to tell if an event is valid.
-my %event_action = (
-    attrValueModified			=> [ '_do_nothing' ],
-    attrRealValueModified		=> [ '_do_nothing' ],
-    attrValueOutOfBounds		=> [ '_do_nothing' ],
-    attrRealValueOutOfBounds		=> [ '_do_nothing' ],
-    attrValueAttemptedOutOfBounds	=> [ '_do_nothing' ],
-    attrRealValueAttemptedOutOfBounds	=> [ '_do_nothing' ],
-    flagModified			=> [ '_do_nothing' ],
-);
-
 # Define a table that shows what order process() is supposed to do things.
 my @process_list = (
-#    'LockAttrMods',	# So as to delay new mods generated til next turn.
     'process_queue',
-#    'UnlockAttrMods',
     'process_pmod',
     'process_tend_to',
-    'process_queue',
 );
 
 # Define a limit to how many times the same item can be processed in a queue
 # (see process_queue() for details)
 my $process_limit = 100;
 
-# Define flag that indicates if new attribute modifiers are to be created 
-# initially locked.
-my $lock_mods = 0;
-
 ####
 ## INTERNAL FUNCTIONS
+
+# Round function provided for the -on_fractional option
+
+sub round { int($_[0] + 0.5); }
 
 # Load a class.
 
@@ -259,6 +254,18 @@ sub _LoadData
 
 ####
 ## FUNCTIONS
+
+# Fetch the global object. Create it if it does not yet exist.
+
+sub GlobalObject
+{
+	my $obj = Find(GLOBAL_OBJ_ID);
+
+	$obj = Games::Object->new(-id => GLOBAL_OBJ_ID) if (!defined($obj));
+	$obj->{priority} = $highest_pri + 1;
+	
+	$obj;
+}
 
 # Fetch parameters, checking for required params and validating the values.
 
@@ -494,31 +501,6 @@ sub Find
 	defined($obj_index{$id}) ? $obj_index{$id} : undef;
 }
 
-# Register an action for an event. The action must consist of a method name
-# that will be invoked on the object that triggers the event (thus you cannot
-# specify arbitrary coderefs, or any refs for that matter other than objects
-# blessed and subclassed to Games::Object).
-
-sub RegisterEvent
-{
-	shift if ($_[0] eq __PACKAGE__);
-	my ($event, $method, @args) = @_;
-
-	# If the method is undefined, then we are unregistering an event
-	# and want it replaced with nothing.
-	if (!defined($method)) {
-	    $event_action{$event} = [ '_do_nothing' ];
-	    return 1;
-	}
-
-	# Check that the event is valid.
-	croak("Invalid event '$event'") if (!defined($event_action{$event}));
-
-	# Store.
-	$event_action{$event} = [ $method, @args ];
-	1;
-}
-
 # Go down the complete list of objects and perform a method call on each. If
 # no args are given, 'process' is assumed. This will call them in order of
 # priority. Objects at the same priority do not guarantee any particular order
@@ -539,21 +521,6 @@ sub Process
 	}
 	scalar(@objs);
 }
-
-# Lock attribute persistent mods. This simply means that new mods created
-# while this is in force will not run the next time process_pmod() is called,
-# but be delayed until the second time it is called. This is mainly to prevent
-# the first run through process_queue() from process() to place new mods that
-# are run immediately, which in most cases makes no sense.
-#
-# This only affects new mods, not existing ones. These are public functions
-# in case the user wants to write his/her own process() method.
-
-sub LockAttrMods { $lock_mods = 1; }
-
-# Unlock attribute mods.
-
-sub UnlockAttrMods { $lock_mods = 0; }
 
 # Set the process list for the process() function. Note that the user is
 # not limited to the methods found here. The methods can be in the subclass
@@ -667,7 +634,7 @@ sub new
 	    [ 'opt', 'file', undef, 'file' ],
 	] );
 	croak "Cannot define both 'filename' and 'file' args to object " .
-		"constructor"
+	      "constructor"
 	    if (defined($args{file}) && defined($args{filename}));
 
 	if (defined($args{filename})) {
@@ -715,6 +682,11 @@ sub new
 	$obj->{flag} = {} unless(defined($obj->{flag}));
 	$obj->{queue} = [] unless(defined($obj->{queue}));
 	$obj->{priority} = 0 unless(defined($obj->{priority}));
+	if (!defined($obj->{pmod})) {
+	    $obj->{pmod} = {};
+	    $obj->{pmod_next} = 0;
+	    $obj->{pmod_active} = 0;
+	}
 
 	# If any flags have the autoset option, we need to set these, if
 	# we're not here as the result of a load from file.
@@ -813,8 +785,10 @@ sub load
 	# Make sure the ID is what we expect.
 	$obj->{id} = $id;
 
-	# Done.
+	# Done. Rebless into this subclass and invoke any event binding
+	# on the objectLoaded event.
 	bless $obj, $subclass if ($subclass ne 'Games::Object');
+	$obj->event('objectLoaded', $id, file => $file);
 	$obj;
 }
 
@@ -851,6 +825,9 @@ sub save
 	my %hash = %$obj;
 	$obj->_protect_attrs(\&_SaveData, $file, \%hash);
 
+	# Invoke any event bindings.
+	$obj->event('objectSaved', $obj->{id}, file => $file);
+
 }
 
 ###
@@ -868,8 +845,7 @@ sub set
 	        unless (defined($user_flag{$fname}));
 	    next if (defined($obj->{flag}{$fname}));
 	    $obj->{flag}{$fname} = 1;
-	    $obj->event('flagModified',
-		flag	=> $fname,
+	    $obj->event('flagModified', $fname,
 		old	=> 0,
 		new	=> 1,
 	    );
@@ -889,8 +865,7 @@ sub clear
 	        unless (defined($user_flag{$fname}));
 	    next if (!defined($obj->{flag}{$fname}));
 	    delete $obj->{flag}{$fname};
-	    $obj->event('flagModified',
-		flag	=> $fname,
+	    $obj->event('flagModified', $fname,
 		old	=> 1,
 		new	=> 0,
 	    );
@@ -997,8 +972,7 @@ sub _set_attr
 		    }
 		}
 		$attr->{$key} = $new;
-		$obj->event("attr${epart}Modified",
-		    name	=> $aname,
+		$obj->event("attr${epart}Modified", $aname,
 		    old		=> $old,
 		    new		=> $new,
 		) if (!$args{no_event} && $old ne $new);
@@ -1019,8 +993,7 @@ sub _set_attr
 		    # occurs before the modification event. This gives the
 		    # OOB action the chance to cancel the modification action,
 		    # since the modifier action is guaranteed to come first.
-		    $obj->event("attr${epart}OutOfBounds",
-			name		=> $aname,
+		    $obj->event("attr${epart}OutOfBounds", $aname,
 			old		=> $old,
 			new		=> $new,
 		    ) if (!$args{no_event});
@@ -1047,7 +1020,7 @@ sub _set_attr
 			# Now invoke the attempted OOB event
 			my $atmp = ( $oob_what eq 'use_up' ? "Attempted" : "" );
 			$obj->event("attr${epart}${atmp}OutOfBounds",
-			    name	=> $aname,
+			    $aname,
 			    old		=> $old,
 			    new		=> $new,
 			    excess	=> $excess,
@@ -1066,8 +1039,7 @@ sub _set_attr
 	    $new = $attr->{$key};
 
 	    # Invoke modified event, but ONLY if it was modified.
-	    $obj->event("attr${epart}Modified",
-		name	=> $aname,
+	    $obj->event("attr${epart}Modified", $aname,
 		old	=> $old,
 		new	=> $new,
 	    ) if (!$args{no_event} && $old != $new);
@@ -1236,11 +1208,6 @@ sub new_attr
 	# Adjust attribute values to get rid of fractionals if not tracking it.
 	$obj->_adjust_int_attr($aname)
 	    if ($attr->{type} eq 'int' && !$attr->{track_fractional});
-
-	# Initialize persistent modifer table.
-	$attr->{pmod} = {};
-	$attr->{pmod_next} = 0;
-	$attr->{pmod_active} = 0;
 
 	# Done.
 	$obj;
@@ -1525,7 +1492,7 @@ sub mod_attr
 		    modify_real	=> $args{modify_real},
 		    incremental	=> $args{incremental},
 		    applied	=> 0,
-		    locked	=> $lock_mods,
+		    locked	=> 0,
 		};
 		$obj->{pmod}{$id} = $mod;
 		$obj->{pmod_active}++ unless ($was_pmod);
@@ -1542,6 +1509,39 @@ sub mod_attr
 	    }
 
 	}  # if defined($args{value}) || defined($args{real_value})
+}
+
+####
+## SPECIAL QUEUING INTERNAL METHODS
+
+# Invoke a callback method of the format that would be specified for, say,
+# an event, with optional addition args. Returns the return code of the callback
+# method. If the callback passed is undef, returns 0.
+
+sub _invoke
+{
+	my $obj = shift;
+	my ($callbk, @moreargs) = @_;
+
+	return 0 if (!defined($callbk));
+
+	if (ref($callbk) eq 'ARRAY') {
+	    # Check the first member of the array. If it is an object, then
+	    # we're doing a proxy call. We invoke the callback on THIS
+	    # object instead.
+	    my @args = @$callbk;
+	    if ($args[0] =~ /^Games::Object\((.+)\)$/) {
+		my $pobj = Find($1);
+		shift @args;
+		my $meth = shift @args;
+		$pobj->$meth(@args, @moreargs, object => $obj);
+	    } else {
+	        my $meth = shift @args;
+	        $obj->$meth(@args, @moreargs);
+	    }
+	} else {
+	    $obj->$callbk(@moreargs);
+	}
 }
 
 ####
@@ -1572,25 +1572,71 @@ sub queue
 	1;
 }
 
-# Indicate that an event has occurred by queuing its associated action to
-# run.
+# Bind an event to a corresponding action. This can actually be called as
+# either an object or class method, depending on the scope of the action.
+
+sub bind_event
+{
+	my $obj = shift;
+	my ($key, $event, $callbk) = (
+	    @_ == 1 ? ( '*', '*', $_[0] ) :
+	    @_ == 2 ? ( '*', $_[0], $_[1] ) :
+	    @_ == 3 ? @_ :
+	    croak("Invalid number of arguments to bind_event()")
+	);
+
+	# If the class was specified, then we will be tying the binding to
+	# the global object.
+	$obj = GlobalObject() if (!ref($obj));
+
+	# If the callback is an array and the first item is an object
+	# reference, we want to convert this to something that will prevent
+	# potential circular references.
+	if (ref($callbk) eq 'ARRAY'
+	&& UNIVERSAL::isa($callbk->[0], 'Games::Object') ) {
+	    my $id = $callbk->[0]->id();
+	    $callbk->[0] = "Games::Object($id)";
+	}
+
+	# Assign/delete the binding.
+	if (!ref($callbk) && $callbk eq EVENT_NULL_CALLBACK) {
+	    delete $obj->{binding}{$key}{$event};
+	} else {
+	    $obj->{binding}{$key}{$event} = $callbk;
+	}
+
+	1;
+}
+
+# Process an event
 
 sub event
 {
-	my ($obj, $event, @args) = @_;
+	my ($obj, $event, $key, @args) = @_;
 
-	# Make sure it is a valid event.
-	croak("Invalid event '$event'") if (!defined($event_action{$event}));
+	my $gbl = GlobalObject();
+	my $rc;
 
-	# Combine event args with stored args. The new args override any
-	# of the same name in the stored args.
-	my @action = @{$event_action{$event}};
-	my $method = shift @action;
-	my @allargs = ( @action, @args, event => $event );
+	# Add addition args.
+	push @args, (
+	    event	=> $event,
+	    key		=> $key,
+	);
 
-	# Queue it.
-	$obj->queue($method, @allargs);
-	1;
+	# Invoke all applicable callbacks.
+	return $rc
+	    if ($rc = $obj->_invoke($obj->{binding}{$key}{$event}, @args));
+	return $rc
+	    if ($rc = $obj->_invoke($gbl->{binding}{$key}{$event}, @args));
+	return $rc
+	    if ($rc = $obj->_invoke($obj->{binding}{'*'}{$event}, @args));
+	return $rc
+	    if ($rc = $obj->_invoke($gbl->{binding}{'*'}{$event}, @args));
+	return $rc
+	    if ($rc = $obj->_invoke($obj->{binding}{'*'}{'*'}, @args));
+	return $rc
+	    if ($rc = $obj->_invoke($gbl->{binding}{'*'}{'*'}, @args));
+	0;
 }
 
 ####
@@ -1784,14 +1830,27 @@ sub new_id
 	}
 }
 
-# Fetch/set priority of object.
+# Fetch/set priority of object. Note that you cannot set the priority of
+# the global object, as this is controlled internally.
 
 sub priority
 {
 	my $obj = shift;
 
 	if (@_) {
-	    $obj->{priority} = shift;
+	    if ($obj->id() eq GLOBAL_OBJ_ID) {
+		carp "Cannot set priority of global object";
+		return undef;
+	    }
+	    my $pri = shift;
+	    if ($pri >= $highest_pri) {
+		$highest_pri = $pri;
+		my $global = Find(GLOBAL_OBJ_ID);
+		$global->{priority} = $highest_pri + 1 if ($global);
+	    }
+	    my $oldpri = $obj->{priority};
+	    $obj->{priority} = $pri;
+	    $oldpri;
 	} else {
 	    $obj->{priority};
 	}
@@ -1819,1573 +1878,3 @@ sub destroy
 sub DESTROY { shift->destroy(); }
 
 1;
-__END__
-
-=head1 NAME
-
-Games::Object - Provide a base class for game objects
-
-=head1 SYNOPSIS
-
-    package YourGameObject;
-    use Games::Object;
-    use vars qw(@ISA);
-    @ISA = qw(Games::Object);
-
-    sub new {
-	# Create object
-	my $proto = shift;
-	my $class = ref($proto) || $proto;
-	my $self = $class::SUPER->new();
-	bless $self, $class;
-
-	# Add attributes
-	$self->new_attr(-name => "hit_points",
-			-type => 'int'
-			-value => 20,
-			-tend_to_rate => 1);
-	$self->new_attr(-name => "strength",
-			-type => 'int',
-			-value => 12,
-			-minimum => 3,
-			-maximum => 18);
-	...
-
-	return $self;
-    }
-
-    ...
-
-    1;
-
-=head1 ABSTRACT
-
-The purpose of this module is to allow a programmer to write a game in Perl
-easily by providing a basic framework in the form of a module that can be
-either subclassed to a module of your own or used directly as its own object
-class. The most important items in this framework are:
-
-=over 4
-
-=item Attributes
-
-You can define arbitrary attributes on objects with rules on how they may
-be updated, as well as set up automatic update of attributes whenever the
-object's C<process()> method is invoked. For example, you could set an
-attribute on an object such that:
-
-=over 4
-
-=item *
-
-It ranges from 0 to 100.
-
-=item *
-
-Internally it tracks fractional changes to the value but accessing the
-attribute will always round the result to an integer.
-
-=item *
-
-It will automatically tend towards the maximum by 1 every time C<process()>
-is called on the object.
-
-=item *
-
-A method in your subclass will be invoked automatically if the value falls
-to 0.
-
-=back
-
-This is just one example of what you can do with attributes.
-
-=item Flags
-
-You can define any number of arbitrarily-named flags on an object. A flag
-is a little like a boolean attribute, in that it can have a value of either
-true or false. Flags can be added to the overall "universe" in which your
-objects exist such that new objects created automatically get certain
-flags set.
-
-=item Load/Save functionality
-
-Basic functionality is provided for saving data from an object to a file, and
-for loading data back into an object. This handles the bulk of load game /
-save game processing, freeing the programmer to worry about the mechanics
-of the game itself.
-
-The load functionality can also be used to create objects from object templates.
-An object template would be a save file that contains a single object.
-
-=back
-
-It should be noted that many of the features of this module have definitely
-been geared more towards RPG, strategy, and D&D-like games. However, there is
-enough generic functionality for use in many other genres. Suggestions at ways
-to add more generalized functionality are always welcome.
-
-=head1 DESCRIPTION
-
-=head2 Using Games::Object as a base class
-
-This is the optimal way to use Games::Object. You define a game object class
-of your own as a subclass of Games::Object. In your constructor, you create
-a Games::Object classed object first, then re-bless it into your class. You
-can then add your object class' customizations. To insure that all your
-customizations can be potentially C<save()>ed at a later time, you should
-add all your data to the object as attributes.
-
-The main reason this is the ideal way to use this class will become clear when
-you reach the section that talks about events. Briefly, an event is defined
-as some change to the object, such as an attribute being modified or a boundary
-condition being reached. If you wish to provide code to be executed when
-the event is triggered, you must define it in the form of a method call. This
-is due to the fact that you would want your event mappings to be C<save()>ed
-as well as your attributes, and CODE references cannot be written out and
-read back in.
-
-=head2 Using Games::Object as a standalone module
-
-Nothing explicitly prohibits the use of this module in this fashion. Indeed,
-the very idea behind OOP is that a class does not need to know if it is being
-subclassed or not. It is permissable to use "raw" Games::Object objects in
-this manner.
-
-The only limitation is that you may not be able to define event mappings,
-due to the limitation stated above.
-
-=head1 The Constructor
-
-=head2 Creating an empty object
-
-Creating an empty object can be done simply as follows:
-
-    $obj = new Games::Object;
-
-When an object is created in this fashion, it generally has nothing in it. No
-attributes, no flags, nothing. There are no options at this time in the
-constructor to automatically add such things at object creation.
-
-There is one exception to this rule, however. If you have creatad user-defined
-flags (see L<"User-defined Flags"> for details) with the I<autoset> option,
-these flags will automatically be set on the object when it is created.
-
-Each object that is created must have a unique ID. When you create an empty
-object in this manner, a guaranteed unique ID is selected for the object, which
-can be retrieved with the C<id()> method. If you wish to specify your own
-ID, you can specify it as an argument to the constructor:
-
-    $obj = new Games::Object(-id => "id-string");
-
-Specifying an ID that already exists is a fatal error. You can check ahead of
-time if a particular ID exists by using the C<Find()> function.
-Given an ID, it will return the reference to the Games::Object that this
-identifies, or undef if the ID is unused.
-
-=head2 Creating an object from an open file
-
-You can instantiate a new object from a point in an open file that contains
-Games::Object data that was previous saved with C<save()> by passing the
-open file to the constructor:
-
-    $obj = new Games::Object(-file => \*INFILE);
-
-The argument to I<-file> can be a simple GLOB reference or an IO::File object
-or FileHandle object, so long as it has been opened for reading already.
-
-The constructor will use as the ID of the object the ID that was stored in the
-file when it was saved. This means that this ID cannot already exist or it is
-a fatal error.
-
-A simple way to implement a load-game functionality that takes place at game
-initialization would thus be to open the save file, and make repeated calls to
-L<new()|"The Constructor"> until the end of file was reached.
-
-Note that when loading an object from a file, autoset options on flags are
-ignored. Instead, flags are set or cleared according to the data stored in the
-file. Thus the object is guaranteed to look exactly like it does when it was
-saved.
-
-You can choose to override the ID stored in the file by passing an I<-id> option
-to the constructor along with the I<-file> option. This would in essence allow
-you to create duplicate objects if you were so minded. Example:
-
-    my $fpos = tell INFILE;
-    my $obj1 = new Games::Object(-file => \*INFILE);
-    seek(INFILE, $fpos, SEEK_SET);
-    my $obj2 = new Games::Object(-file => \*INFILE, -id => $obj1->id() . "COPY");
-
-=head2 Creating an object from a template file
-
-In this case "template" is simply a fancy term for "a file that contains a
-single object definition". It is simply a convenience; rather than opening
-a file yourself and closing it afterward just to read one object, this does
-those operations for you:
-
-    $obj = new Games::Object(-filename => "creatures/orc.object");
-
-All it really is a wrapper around a call to open(), a call to the constructor
-with a I<-file> argument whose value is the newly opened file, and a call to
-close(). As with I<-file>, it obtains the ID of the object from the file, but
-you can specify an I<-id> option to override this. Example:
-
-    $obj = new Games::Object(-filename => "creatures/orc.object", -id => "Bob");
-
-=head2 Objects are persistent
-
-It is important to note that when you create an object, the object is
-persistent even when the variable to which you have assigned the reference
-goes out of scope. Thus when you do something like this:
-
-    my $obj = new Games::Object;
-
-At that moment, two references to the object exists. One is in I<$obj>, while
-the other is stored in a hash internal to the Games::Object module. This is
-needed so as to be able to later map the ID back to the object. It also frees
-the game programmer from having to maintain his/her own similar list.
-
-=head1 Retrieving a previously created object
-
-As mentioned in the previous section, objects are persistent, even after the
-initial variable containing the reference to it goes out of scope. If you
-have the ID of the object, you can later retrieve a reference to the object
-via C<Find()>, which can be called either as a function like this:
-
-    my $obj = Find('Sam the ogre');
-
-Or as a class-level method:
-
-    my $obj = Games::Object->Find('Sam the ogre');
-
-This will work no matter how the object was created, either through creating
-a new object or loading an object from a file.
-
-If the ID specified is not a valid object, C<Find()> will return undef.
-
-=head1 Destroying objects
-
-As mentioned in the previous section, objects are persistent, thus they never
-get destroyed simply by going out of scope. In order to effect purposeful
-destruction of an object, you must call the C<destroy()> method:
-
-    $obj->destroy();
-
-This will empty the object of all its data and remove it from the internal
-table in Games::Object such that future calls to C<Find()> will return undef.
-In addition, the object will no longer be found on any class-level methods
-of functions that operate on the entire list of objects (such as C<Process()>).
-In the above example, once I<$obj> goes out of scope, the actual memory inside
-Perl for the object will be freed. You could conceivably simply avoid the
-middleman and not even assign it to a local variable, so long as you're
-confident that the object exists:
-
-    Find('Dragonsbane')->destroy();
-
-=head1 User-defined Flags
-
-=head2 Creating flags
-
-A user-defined flag is any arbitrary string that you wish to use to represent
-some sort of condition on your objects. For example, you might want a flag
-that indicates if an object can be used as a melee weapon. Flags are defined
-globally, rather than on an object-per-object basis. This is done with the
-function C<CreateFlag()>:
-
-    CreateFlag(-name => "melee_weapon");
-
-The only restriction on flag names is that they cannot contain characters that
-could be interpretted as file-control characters (thus you can't have imbedded
-newlines), or the "!" character (which is reserved for future planned
-functionality). If you stick to printable characters, you
-should be fine.
-
-You can choose to set up a flag such that it is automatically set on new
-objects that are created from that point in time forward by using the
-I<-autoset> option:
-
-    CreateFlag(-name => "melee_weapon", -autoset => 1);
-
-If you later with to turn off I<-autoset>, you can do so with C<ModifyFlag()>:
-
-    ModifyFlag(-name => "melee_weapon",
-	       -option => "autoset",
-	       -value => 0);
-
-There is currently no requirement as to what order you perform you calls to
-C<CreateFlag()> or L<new()|"The constructor">, other than you will not be able
-to set or clear a flag until it has been defined. It is probably good practice
-to define all your flags first and then create your objects.
-
-=head2 Setting/clearing flags
-
-You may set a user-defined flag on an object with the C<set()> method:
-
-    $obj->set('melee_weapon');
-
-You can choose to set multiple flags at one time as well:
-
-    $obj->set('melee_weapon', 'magical', 'bladed');
-
-Setting a flag that is already set has no effect and is not an error. The
-method returns the reference to the object.
-
-Clearing one or more flags is accomplished in similar fashion with the
-C<clear()> method. Like C<set()>, it can clear multiple flags at once:
-
-    $obj->clear('cursed', 'wielded');
-
-=head2 Fetching flag status
-
-Two methods are provided for fetching flag status, C<is()> and C<maybe()>.
-
-The C<is()> method returns true if the flag is set on the object. If more than
-one flag is specified, then ALL flags must be set. If even one is not set,
-false is returned. For example:
-
-    if ($weapon->is('cursed', 'wielded')) {
-	print "It is welded to your hand!\n";
- 	...
-    }
-
-The C<maybe()> method works the same as C<is()> for a single flag. If multiple
-flags are present, however, it requires only that at least one of the specified
-flags be set to be true. Only if none of the flags are present will it return
-false. Example:
-
-    if ($weapon->maybe('rusted', 'corroded', 'broken')) {
-	print "It's not looking in good shape. Sure you want to use it?\n";
-	...
-    }
-
-=head1 Attributes
-
-This is the heart of the module. Attributes allow you to assign arbitrary data
-to an object in a controlled fashion, as well as dictate the rules by which
-attributes are modified and updated.
-
-=head2 Creating Attributes
-
-=over 4
-
-=item Simple attributes
-
-A simple attribute has a name that uniquely identifies it, a datatype, and the
-starting value. The name needs to be unique only in the confines of the object
-on which the attribute is defined. Two different objects with an attribute
-of the same name retain separate copies of the attribute. They do not even
-need to be the same datatype.
-
-An attribute of type I<number> can take on any valid decimal numeric value
-that Perl recognizes. Such an attribute can be created as follows:
-
-    $obj->new_attr(-name => "price",
-		   -type => "number",
-		   -value => 1.99);
-
-Any attempt to set this to a non-numeric value later would be treated
-as an error.
-
-The datatype of I<int> is similar to I<number> except that it restricts the
-value to integers. Attempting to set the attribute to a numeric that is not
-an integer, either when created or later modified, is not an error, but the
-result will be silently truncated as if using the Perl C<int()> function.
-An I<int> attribute can be created as follows:
-
-    $obj->new_attr(-name => "experience",
-		   -type => "int",
-		   -value => 0);
-
-An attribute of type I<string> is intended to contain any arbitrary, printable
-text. This text can contain newlines and other text formatting characters such
-as tabs. These will be treated correctly if the object is later saved to a
-file. No special interpretation is performed on the data. Such an attribute
-can be created as follows:
-
-    $obj->new_attr(-name => "description",
-		   -type => "string",
-		   -value => "A long blade set in an ornamental scabbard of gold.");
-
-The I<any> datatype is used for data that does not fall into any of the above
-categories. No particular interpretation is performed on the data, and no
-special abilities are associated with it. Use this datatype when you wish to
-store references to arrays or hashes. The only caveat is that these complex
-data structures must eventually work down to simple scalar types for the
-data in the attribute to be C<save()>d correctly later. Do not use this for
-object references, except for objects subclassed to Games::Object (this is
-covered in more detail in an upcoming section). Here is an example of using
-the I<any> datatype:
-
-    $obj->new_attr(-name => "combat_skill_levels",
-		   -type => "any",
-		   -value => {
-			melee		=> 4,
-			ranged		=> 2,
-			hand_to_hand	=> 3,
-			magical		=> 5,
-		   });
-
-There is one more datatype called I<object>, which is intended to provided a
-way for storing an object reference in an attribute. However, as there are
-some special caveats and setup required, this is covered as a separate topic.
-
-=item Split attributes
-
-A "split" attribute is available only to datatypes I<number> and I<int>. An
-attribute that is split maintains two separate values for the attribute, a
-"real value" and a "current value" (or simply the "value"). An attribute that
-is split in this way has the following properties:
-
-=over 4
-
-=item *
-
-By default, when retrieving the value, the current value is returned.
-
-=item *
-
-The current value will "tend towards" the real value when the object's
-C<process()> method is called (covered in a later section).
-
-=item *
-
-Both the current and real values can be manipulated independent of one another
-(except where noted above with regards to the "tend to" processing).
-
-=back
-
-A split attribute is defined by specifying the additional parameter
-I<-tend_to_rate>, as in this example:
-
-    $obj->new_attr(-name => "health",
-		   -type => "int",
-		   -tend_to_rate => 1,
-		   -value => 100);
-
-This indicates that each time the object is processed, the current value will
-tend towards the real by 1. The tend-to rate is always treated as a positive
-number. Its sign is adjusted internally to reflect what direction the current
-needs to go to reach the real (thus in this case if the real were less than
-the current, 1 would be subtracted from the current when the object was
-processed).
-
-Note in the above example that in the absense of specifying what the starting
-real value is, the real value will start off set to the current (in this case,
-the value of 100). If you wish to start off the real at a different value
-than the current, you add the I<-real_value> option, as in this example:
-
-    $obj->new_attr(-name => "power",
-		   -type => "number",
-		   -tend_to_rate => 0.2,
-		   -value => 0,
-		   -real_value => 250);
-
-=item Limited attributes
-
-An attribute's value can be "limited", in that it is not allowed to go beyond
-a certain range or a certain set of values.
-
-Attributes of type I<number> and I<int> can be limited in range by adding the
-I<-minimum> and I<-maximum> options when the attribute is created. Note that
-you can choose to use one or the other or both. Example:
-
-    $obj->new_attr(-name => "hit_points",
-		   -type => "int",
-		   -tend_to_rate => 1,
-		   -value => 20,
-		   -minimum => 0,
-		   -maximum => 50);
-
-By default, attempts to modify the attribute outside the range will cause the
-modifying value to be "used up" as much as possible until the value is pegged
-at the limit, and the remainder ignored. In the above example, if the current
-value were 5, and an attempt to modify it by -7 were attempted, it would be
-modified only by -5 as that would put it at the minimum of 0. This default
-behavior can be modified with the I<-out_of_bounds> option, which is a string
-that has one of the following values:
-
-=over 4
-
-=item use_up
-
-Use up as much of the modifying value as possible (the default).
-
-=item ignore
-
-Ignore the modification entirely. The value of the attribute will not be
-changed.
-
-=item track
-
-Operates like I<use_up>, except that the excess is tracked internally.
-Subsequent attempts to modify the attribute the other way will have to use
-up this amount first B<[NOTE: This is currently not implemented]>.
-
-=back
-
-Attributes of type I<string> can be limited by specifying a set of allowed
-values for the attribute. This is done when the attribute is created by
-adding the I<-values> option. This is a reference to an array of strings that
-constitute the only allowable values for this attribute. For example:
-
-    $obj->new_attr(-name => "status",
-		   -values => [ 'quiet', 'moving', 'attacking', 'dead' ],
-		   -value => 'quiet');
-
-=item Mapped attributes
-
-This feature is available only to I<string> attributes. This allows you to
-map the actual value of the attribute such that when it is retrieved normally,
-some other text is returned instead. This is done by adding a I<-map> option
-when the attribute is created. The argument to I<-map> is a reference to a hash
-containing the allowed values of the attribute as keys, and the corresponding
-values to be returned when the attribute is fetched as values. For example:
-
-    $obj->new_attr(-name => "status",
-		   -values => [ 'quiet', 'moving', 'attacking', 'dead' ],
-		   -value => 'quiet',
-		   -map => {
-			quiet	=> "It appears quiescent.",
-			moving	=> "It is moving stealthily.",
-			attacking => "It is attacking you!",
-			dead	=> "It's dead, Jim.",
-		   } );
-
-Note that the above example used I<-map> with I<-values>, but you're not
-required to do this. With this setup, retrieving the value of this attribute
-when it is set internally to "dead" will cause "It's dead, Jim." to be
-returned instead.
-
-=item Object reference attributes
-
-Games::Object offers a way to store object references in your attributes.
-Object references in this case are broken down into two areas: easy and hard.
-
-The easy references are references to Games::Object objects or objects from
-subclasses of Games::Object. These references may be stored either as an
-I<any> datatype, or as a scalar value from a complex data structure on an
-I<any> datatype. When you store these references, upon saving the data to
-an external file, the references are converted to ID strings and then back
-again when reloaded. The code handles cases of objects not yet loaded but
-references in an attribute automatically.
-
-B<BEWARE!> If objects in your game frequently get created and destroyed, it
-is probably NOT a good idea to store objects as references in your attributes.
-This could set up a memory leak condition, as the memory for such objects may
-never be freed back to Perl if references to them exists inside attributes of
-other objects. You're really better off using the ID string and storing that
-instead. You can always use L<Find()|"Retrieving a previously created object">
-to retrieve the object reference again later.
-
-The hard ones are references to other arbitrary object classes. This involves
-a bit more work.
-
-First, before you do anything, you must register the class. This gives the
-Games::Object module information on how to deal with objects of this class
-in terms of manipulating its data. This will require that the object class
-in question:
-
-=over 4
-
-=item *
-
-Assign a unique ID to each object, much in the same way that Games::Object
-does.
-
-=item *
-
-Provide an object method for retrieval of an object's ID, as well as a class
-method to convert an ID back to a reference.
-
-=item *
-
-Provide methods for loading and saving object data at the point in the file
-where it is stored in the attribute. This means the load method must properly
-create and bless the object.
-
-=back
-
-Thus this is not for the faint of heart. Registering a class requires calling
-the C<RegisterClass> function like so:
-
-    RegisterClass(-class => "Your::Class::Name");
-
-This is the simplest way to register a class, and makes broad assumptions
-about the names of the methods and functions, specifically:
-
-=over 4
-
-=item *
-
-The object method to retrieve the Id of an object is C<id()>, which is called
-with no arguments.
-
-=item *
-
-The class method to find a reference given an ID is C<Find()>, which is called
-with a single argument (the ID string).
-
-=item *
-
-The class method to load an object is C<load()>, which is called with the
-I<-file> parameter as the Games::Object method would be.
-
-=item *
-
-The object method to save an object is C<save()>,.
-
-=back
-
-These assumptions can be modified with extra parameters to C<RegisterClass()>:
-
-=over 4
-
-=item -id
-
-Specify the name of the ID object method.
-
-=item -find
-
-Specify the name of the object find class method.
-
-=item -load
-
-Specify the name of the object load class method.
-
-=item -save
-
-Specify the name of the object save object method.
-
-=back
-
-For example:
-
-    RegisterClass(-class => "Some::Other::Class",
-		  -id => "identifer",
-		  -find => "toObject",
-		  -load => "read",
-		  -save => "write");
-
-Once you have registered the class, you can now place references to these
-objects inside your attributes in the following manner:
-
-    $other_obj = new Some::Other::Class;
-    $obj->new_attr(-name => "some_other_object",
-		   -type => "object",
-		   -class => "Some::Other::Class",
-		   -value => $other_obj);
-
-And you can modify an existing value with C<mod_attr()>:
-
-    $obj->mod_attr(-name => "some_other_object",
-		   -value => $another_obj);
-
-But both C<new_attr()> and C<mod_attr()> give you a neat feature: you can
-specify the I<-value> parameter as either the object reference, or the object
-ID. If you give either one a non-reference, it will assume that this is the ID
-of the object and call the find method behind the scenes to obtain the
-real object reference.
-
-=item Other attribute tricks
-
-There are a few more things you can do with attributes at creation time.
-
-Recall above that I stated that by default, if you assign a fractional value
-to an attribute that is of type I<int> that it stores it as if calling
-the Perl C<int()> function. Well, this behavior can be modified. You can
-specify the I<-on_fractional> option when creating the attribute. This can be
-set to one of "ceil", "floor", or "round". When a fractional
-value results from an assignment or modification, the corresponding function
-in the Perl POSIX module is called on the result. Example:
-
-    $obj->new_attr(-name => "time",
-		   -type => "int",
-		   -on_fractional => "round",
-		   -value => 0);
-
-There's even more you can do with fractional amounts on integer attributes. You
-can instruct the object to track the fractional component rather than just
-throw it away. Retrieving the value will still result in an integer, which
-by default is derived by C<int()>ing the factional value. For example, say
-that an attribute is defined like this initially:
-
-    $obj->new_attr(-name => "level",
-		   -type => "int",
-		   -track_fractional => 1,
-		   -value => 1,
-		   -maximum => 10);
-
-Initially, retrieving the value will result in 1. Say you later add 0.5 to it.
-Internally, 1.5 is stored, but 1 still results when retreiving the value. If
-later the value becomes 1.99999, 1 is still returned. Only when it reaches 2.0
-or better will 2 be returned.
-
-You can combine I<-track_fractional> and I<-on_fractional>. In this case,
-I<-on_fractional> refers to how the value is retrieved rather than how it is
-stored. Say we change the above definition to:
-
-    $obj->new_attr(-name => "level",
-		   -type => "int",
-		   -track_fractional => 1,
-		   -on_fractional => "round",
-		   -value => 1,
-		   -maximum => 10);
-
-Now if the internal value is 1.4, retrieving it will result in 1. But if the
-internal value reaches 1.5, now retrieving the value will return 2.
-
-=back
-
-=head2 Attribute Existence
-
-You can check to see if an attribute exists with C<attr_exists()>:
-
-    if ($obj->attr_exists('encounters')) {
-	$obj->mod_attr(-name => 'encounters', -modify => 1);
-    } else {
-	$obj->new_attr(-name => 'encounters',
-		       -type => 'int',
-		       -value => 1);
-    }
-
-=head2 Fetching Attributes
-
-An attribute's value is fetched with the C<attr()> method:
-
-    $str = $obj->attr('strength');
-
-This is subject to all the interpretations mentioned above, which is summarized
-below:
-
-=over 4
-
-=item *
-
-If the attribute is split, the current value is returned.
-
-=item *
-
-If the attribute is an integer tracking fractionals, an integer is still
-returned, calculated according to the value of the I<-on_fractional> option
-when the attribute was created.
-
-=item *
-
-If the attribute is mapped, and there is a valid entry in the map table, the
-mapped value is returned.
-
-=back
-
-To retrieve the real value as opposed to the current value in a split
-attribute, specify the string "real_value" as the second argument:
-
-    $realhp = $obj->attr('hit_points', 'real_value');
-
-This is still subject to rules of factionals and mapping. To completely
-bypass all of this, retrieve the value with C<raw_attr()> instead:
-
-    $rawlev = $obj->raw_attr('level');
-    $rawlev_real = $obj->raw_attr('level', 'real_value');
-
-An important note when dealing with attributes of datatype I<any> that are
-array or hash references: When you use either C<attr()> or C<raw_attr()> (which
-are effectively the same thing in this case), you get back the reference. This
-means you could use the reference to modify the elements of the array or
-keys of the hash. This is okay, but modifications will not generate events.
-Here is an example (building on the example above for creating an attribute
-of this type):
-
-    $cskill = $obj->attr('combat_skill_levels');
-    $cskill->{melee} ++;
-
-In all cases, if the attribute specified does not exist, undef is returned.
-
-=head2 Modifying Attributes
-
-Modifying attributes is where a lot of the strengths of attributes lie, as the
-module tries to take into account typical modifier situations that are found
-in various games. For example, sometimes an attribute needs to be modified
-only temporarily. Or a modification could be thwarted by some other outside
-force and thus negated. And so on.
-
-=over 4
-
-=item Simple modifiers
-
-A simple modifier is defined as a modification that occurs immediately and is
-not "remembered" in any way. No provisions are made for preventing multiple
-modifications within a given cycle, either through time or code. The value
-of the attribute is changed and the deed is done.
-
-There are two ways to perform a simple modification. One is to set the value
-directly, which would be done as in the following examples:
-
-    $obj->mod_attr(-name => "color", -value => "red");
-    $obj->mod_attr(-name => "price", -value => 2.58);
-    $obj->mod_attr(-name => "description", -value => "A piece of junk.");
-
-If an attribute is split, this would set the current value only. The real
-value could be set by using I<-real_value> instead of I<-value>:
-
-    $obj->mod_attr(-name => "health", -real_value => 0);
-
-The other way is to modify it relative to the current value. This is available
-only to numeric types (I<int> and I<number>) as in these examples:
-
-    $obj->mod_attr(-name => "hit_points", -modify => -4);
-    $obj->mod_attr(-name => "strength", -modify => -1);
-
-In these cases, -modify modifies the current value if the attribute is split.
-To change the real value, you would use I<-modify_real> instead.
-
-=item Persistent modifiers
-
-A persistent modifier is one that the object in question "remembers". This
-means that this modifier can later be cancelled, thus rescinding the
-blessing (or curse) that it bestowed on this attribute.
-
-Currently, this type of modifier is limited to numeric types, and must be
-of the relative modifier type (via I<-modify> or I<-modify_real>). In addition,
-it should be noted that the results of a persistent modifier are NOT applied
-immediately. They are instead applied the next time the object is
-C<process()>ed. That said, all that is needed to turn a modifier into a
-persistent one is adding a I<-persist_as> option:
-
-    $obj->mod_attr(-name => "strength",
-		   -modify => 1,
-		   -persist_as => "spell:increase_strength");
-
-The value of I<-persist_as> becomes the ID for that modifier, which needs to be
-unique for that object. The ID should be chosen such that it describes what
-the modification is, if for no other reason than your programming sanity.
-
-What happens now is that the next time C<process()> is called on the object,
-the "strength" attribute goes up by 1. This modification is done once. In other
-words, the next time after that that C<process()> is called, it does NOT go up
-by another 1.
-
-However, this does not mean you can't have it keep going up by 1 each time if
-that's what you really wanted. In order to accomplish this effect, add the
-I<-incremental> option:
-
-    $obj->mod_attr(-name => "health",
-		   -modify => 3
-		   -persist_as => "spell:super_healing",
-		   -incremental => 1);
-
-In this example, the "health" attribute will indeed increment by 3 EVERY time
-C<process()> is called.
-
-There is another important difference between incremental and non-incremental
-persistent modifiers. A non-incremental modifier's effect is removed when
-the modifer is later cancelled. Thus in the above example, if the "strength"
-modifier caused it to go from 15 to 16, when the modifier is removed, it will
-drop back from 16 to 15. However, in the case of the incremental modifier,
-the effects are permanent. When the "health" modifier goes away, it does not
-"take away" the accumulated additions to the attribute.
-
-Note that the effects of modifiers and tend-to rates are cumulative. This
-needs to be taken into account to make sure modifiers are doing what you
-think they're doing. For instance, if the idea is to add a modifier that
-saps away health by -1 each time C<process()> is called, but the health
-attribute has a I<-tend_to_rate> of 1, the net effect will simply be to cancel
-out the tend-to, which may or may not be what you wanted. Future directions
-for this module may include ways to automatically nullify tend-to rates.
-
-Also note that modifiers are still subject to limitations via I<-minimum> and
-I<-maximum> options on the attribute.
-
-=item Self-limiting modifiers
-
-It was noted above that persistent modifiers stay in effect until they are
-purposely cancelled. However, you can set up a modifier to cancel itself after
-a given amount of time by adding the I<-time> option:
-
-    $obj->mod_attr(-name => "wisdom",
-		   -modify => 2,
-		   -persist_as => "spell:increase_wisdom",
-		   -time => 10);
-
-In this case, -time refers to the number of times C<process()> is called (rather
-than real time). The above indicates that the modification will last through
-the next 10 full calls to C<process()>. These means that after the 10th call
-to C<process()>, the modification is still in effect. Only when the 11th
-call is made is the modifier removed.
-
-A self-limiting modifier can still be manually cancelled like any other
-persistent modifier.
-
-=item Delayed-action modifiers
-
-A persistent modifier, either one that is timed or not, can be set up such
-that it does not take effect for a given number of iterations through the
-C<process()> method. This is done via the I<-delay> option, as in this example:
-
-    $obj->mod_attr(-name => "health",
-		   -modify => -5,
-		   -incremental => 1,
-		   -persist_as => "food_poisoning",
-		   -time => 5,
-		   -delay => 3);
-
-This means: For the next 3 calls to C<process()>, do nothing. On the 4th,
-begin subtracting 5 from health for 5 more times through C<process()>. The
-last decrement to health will take place on the 8th call to C<process()>. On
-the 9th call, the modifier is removed.
-
-Note that while this example combined I<-delay> with I<-time> and
-I<-incremental> to show how they can work together, you do not have to combine
-all these options.
-
-A delayed-action modifier can be cancelled even before it has taken effect.
-
-=item Cancelling persistent modifiers
-
-Any persistent modifier can be cancelled at will. There are two ways to cancel
-modifiers. One is to cancel one specific modifier:
-
-    $obj->mod_attr(-cancel_modify => 'spell:increase_wisdom');
-
-Note that the I<-name> parameter is not needed. This is because this information
-is stored in the internal persistent modifier. You only need the ID that you
-specified when you created the modifier in the first place.
-
-Or, you can choose to cancel a bunch of modifiers at once:
-
-    $obj->mod_attr(-cancel_modify_re => '^spell:.*');
-
-The value of the I<-cancel_modify_re> option is treated as a Perl regular
-expression that is applied to every modifier ID in the object. Each that matches
-will be cancelled. Any matching modifiers on that object will be cancelled,
-no matter what attribute they are modifying. This makes it easy to cancel
-similar modifiers across multiple attributes.
-
-For each non-incremental modifier that is cancelled, C<mod_attr()> will reverse
-the modification that was made to the attribute, but not right away. It will
-instead take place the next time C<process()> is called. To override this
-and force the change at the very moment the cancellation is done, include
-the I<-immediate> option set to true, as in this example:
-
-    $obj->mod_attr(-cancel_modify_re => '^spell:.*',
-		   -immediate => 1);
-
-=back
-
-=head2 The I<-force> option
-
-Any modification of an attribute via C<mod_attr()> may take the I<-force>
-option. Setting this to true will cause the modifier to ignore any bounds
-checking on the attribute value. In this manner you can force an attribute
-to take on a value that would normally be outside the range of the attribute.
-
-For example, the following modification would force the value of the attribute
-to 110, even though the current maximum is 100:
-
-    $obj->new_attr(-name => "endurance",
-		   -value => 90,
-		   -minimum => 0,
-		   -maximum => 100);
-    ...
-    $obj->mod_attr(-name => "endurance",
-		   -modify => 20,
-		   -persist_as => "spell:super_endurance",
-		   -force => 1);
-
-=head2 Modifying attribute properties
-
-Various properties of an attribute normally set at the time the attribute is
-created can be modified later. These changes always take effect immediately and
-cannot be "remembered". The general format is:
-
-    $obj->mod_attr(-name => ATTRNAME,
-		   -PROPERTY => VALUE);
-
-where PROPERTY is one of "minimum", "maximum", "tend_to_rate", "on_fractional",
-"track_fractional", "out_of_bounds".
-
-=head2 Deleting Attributes
-
-To delete an attribute, use the C<del_attr()> method:
-
-    $obj->del_attr('xzyzzy');
-
-This removes the attribute immediately. Any persistent modifiers on this
-attribute are removed at the same time.
-
-=head1 Events
-
-=head2 Callback programming model
-
-This section shows you how you can set up code to trigger automatically when
-changes take place to objects. First, however, you must understand the concept
-of "callback programming".
-
-Callback programming is a technique where you define a chunk of code not to
-be run directly by you, but indirectly when some external event occurs. If
-you've ever done any graphics or signal programming, you've done this before.
-For instance, in Tk you might define a button to call some arbitrary code
-when it is pressed:
-
-    $mainw->Button(
-	-text	=> "Press me!",
-	-command => sub {
-	    print "Hey, the button was pressed!\n";
-	    ...
-	},
-    )->pack();
-
-Or you may have set up a signal handler to do something interesting:
-
-    sub stop_poking_me
-    {
-	my $sig = shift;
-	print "Someone poked me with signal $sig!\n";
-    }
-
-    $SIG{TERM} = \&stop_poking_me;
-    $SIG{INT} = \&stop_poking_me;
-
-These are examples of callback programming. Each example above defines a set
-of code to be run when a particular condition (or "event") occurs. This is
-very similar to the way it works in Games::Object, except you're dealing with
-events that have to do with Game::Object entities. There is only one crucial
-difference, which has to do with the way the module is structured, as you'll
-see in the next section.
-
-=head2 Registering an event handler
-
-In order to deal with an event, you must define what is referred to as an
-"event handler". But rather than a function or arbitrary CODE block, you are
-required to specify a method name, i.e. a method that you have written in
-your subclass to handle the event. Here is an example of registering an
-event to deal with the modification of an attribute using the
-C<RegisterEvent()> function:
-
-    RegisterEvent('attrValueModified', 'attr_modified');
-
-Your I<attr_modified> method would then look something like this:
-
-    sub attr_modified {
-	my $obj = shift;
-	my %args = @_;
-
-	...
-    }
-
-The I<$obj> variable would contain the reference to the object that was
-affected (in this case, by an attribute value modification). I<%args> would
-contain a series of parameters that describe the event that took place. While
-most of the parameters will vary according to the event that was generated,
-one parameter will be the same for each one. I<event> will be set to the
-name of the event in question. In the above example, this would be
-"attrValueModified".
-
-=head2 List of events and parameters
-
-The following is a list of events and the parameters that are passed to the
-event handler:
-
-=over 4
-
-=item attrValueModified
-
-This is invoked when the value (the current value in a split attribute) is
-modified by whatever means. The event is generated at the time that the
-value actually changes; thus adding a persistent modifier will not generate
-the event until the modifier is actually applied.
-
-The parameters passed are:
-
-=over 4
-
-=item name
-
-Name of the attribute that was modified.
-
-=item old
-
-The old value of the attribute before it was modified.
-
-=item new
-
-The new value after it was modified.
-
-=back
-
-=item attrRealValueModified
-
-This is the same as I<attrValueModified> except that it is invoked when the
-real value rather than the current value of a split attribute is modified.
-It is subject to the same rules as I<attrValueModified> and also has the
-same parameters.
-
-=item attrValueOutOfBounds
-
-This event occurs when an attribute value (current value in a split attribute)
-has been forced to take on a value outside its normal minimum and maximum,
-generally through the use of the I<-force> option in a call to C<mod_attr>.
-This is ONLY called when a value actually goes out of bounds, not every time
-I<-force> is used. The modification has to actually result in a value that
-is outside the bounds.
-
-The following parameters are passed to the handler:
-
-=over 4
-
-=item name
-
-The name of the attribute that went out of bounds.
-
-=item old
-
-The old value of the attribute prior to modification.
-
-=item new
-
-The new value of the attribute after modification.
-
-=back
-
-=item attrRealValueOutOfBounds
-
-This is the same as I<attrValueOutOfBounds>, except for the real value of a
-split attribute. It is subject to the same rules and conditions as
-I<attrValueOutOfBounds>, and the parameters passed are the same.
-
-=item attrValueAttemptedOutOfBounds
-
-This event occurs when a modification of an attribute would have resulted in
-an out of bounds value had the issue been forced, but in reality the value
-was kept within the bounds of the attribute's defined range. Note that this
-event is generated only if the attribute was defined with an I<-out_of_bounds>
-option of "use_up" (which is the default). If it was defined as "ignore",
-then this event will never be generated.
-
-The following parameters are passed to the event handler:
-
-=over 4
-
-=item name
-
-The name of the affected attribute.
-
-=item old
-
-The old value of the attribute. It is possible that this may be the same as
-the new value, if the modification was attempted when the value was already
-pegged at the boundary.
-
-=item new
-
-The new value of the attribute, which will be at one of the bounds.
-
-=item excess
-
-This is the excess amount that was not applied to the attribute due to the
-boundary condition.
-
-=back
-
-=item attrRealValueAttemptedOutOfBounds
-
-This is the same as I<attrValueAttemptedOutOfBounds>, except for the real
-value of a split attribute. This is subject to the same rules and conditions
-as I<attrValueAttemptedOutOfBounds>, and the parameters passed to the handler
-are the same.
-
-=item flagModified
-
-This is generated when the flag on an object changes value, via either the
-C<set()> or C<clear()> methods. It is generated ONLY if the flag actually was
-modified; doing a C<set()> on a flag that is already set, or C<clear()> on
-one that is already cleared will not generate an event.
-
-The following parameters are passed to the handler:
-
-=over 4
-
-=item flag
-
-The flag that was modified.
-
-=item old
-
-The old value of the flag (either 1 or 0 for true or false, respectively);
-
-=item new
-
-The new value of the flag (either 1 or 0 for true or false, respectively);
-
-=back
-
-When you register an event, you can choose to add your own arguments that
-will be passed to the event handler. This is done by specifying these arguments
-after the name of the handler in the call to C<RegisterEvent()>:
-
-    RegisterEvent('attrValueModified', 'attr_modified',
-		  foo => 'bar', this => 'that');
-
-The values that can be passed in this manner are subject to the same rules
-as the I<any> attribute data type. This means they can be simple scalars
-or references to Games::Object-subclassed objects, or complex data structures
-that ultimately result in simple scalars or Games::Object-subclassed objects.
-This is so that queued events can be properly C<save()>d to a file.
-
-=back
-
-=head1 Processing objects
-
-=head2 Processing a single object
-
-In order for events, persistent modifiers, and tend-to rate calculations to
-be performed on an object, the object in question must be processed. This is
-done by calling the C<process()> method, which takes no arguments:
-
-    $obj->process();
-
-What this method really is is a wrapper around several other object methods
-and function calls that are invoked to perform the invidual tasks involved
-in processing the object. Specifically, C<process()> performs the following
-sequence:
-
-=over 4
-
-=item process_queue
-
-This processes all queued actions for this object. These actions are generally
-events generated after the previous call to C<process()> completed, deferred
-attribute modifications, and changes to attributes resulting from
-cancelled persistent modifiers.
-
-If event handlers perform actions that themselves generate more events, these
-events get added to the end of the queue, and will also be processed until the
-queue is empty. However, it is easy to see how such an arrangement could lead
-to an infinite loop (event handler A generates event B, event handler B is
-queued, event handler B generates event A, event handler A is queued,
-event handler A generates event B ...). To prevent this, C<process_queue()>
-will not allow the same action to execute more than 100 times by default on
-a given call. If this limit is reached, a warning is issued to STDERR and
-any further invokations of this action are ignored for this time through
-C<process_queue()>.
-
-=item process_pmod
-
-This processes all persistent modifiers in the order that they were defined
-on the object. Changes to attributes resulting from this processing may
-generate events that cause your event handlers to be queued up again for
-processing.
-
-The default order that modifiers are processed can be altered. See the
-section L<"Attribute modifier priority"> for further details.
-
-=item process_tend_to
-
-This processes all split attributes' tend-to rates in no particular order.
-Like the previous phase, this one can also generate events based on attribute
-changes.
-
-You can exert some control over the order in which attributes are processed
-in this phase. See section L<"Attribute tend-to priority"> for details.
-
-=item process_queue
-
-This is a repeat of the first phase to handle the events that were generated
-during the previous two phases. It acts exactly like the first phase in that
-it processes the queue until it is exhausted, and will not allow a method
-to be executed more than a given number of times.
-
-=back
-
-=head2 Timing issues
-
-There is one timing issue with the way events are processed in the default
-C<process()> phase list.
-
-Note that C<process_queue()> is called twice, once at the start and again at
-the end. Your event handlers could potentially call C<mod_attr()> and add
-a new persistent modifier. If the modifier is added as a result of an event
-handler executed in the first call to C<process_queue()>, the modifier will
-be processed this time through C<process()>. But if the modifier is instead
-added during the second call to C<process_queue()>, then the modifier will
-not be considered until the NEXT call to C<process()>.
-
-This problem is considered to be a design flaw. Expect this to change in
-later versions of this module. In the meantime, you can affect a workaround
-by modifying the processing list for C<process()>, which is coming up in
-the subsection L<"Modifying the default process sequence">.
-
-=head2 Processing all objects
-
-More likely than not, you are going to want to process all the objects that
-have been created in a particular game at the same time. This can be done
-with the C<Process()> function:
-
-    Process();
-
-That's all it takes. This will go through the list of objects (in no particular
-order by default - see section L<"Priorities"> for details on changing this)
-and call the C<process()> method on each.
-
-The nice thing about C<Process()> is that it is a generic function. With
-no arguments, it calls the C<process()> method. However, if you give it a
-single argument, it will call this method instead. For example, say you
-defined a method in your subclass called I<check_for_spells()>, and you wish
-to execute it on every object in the game. You can call C<Process()> thusly:
-
-    Process('check_for_spells');
-
-Then there is yet one more form of this function call that allows you to
-not only call the same method on all objects, but pass arguments to it as
-well. For instance, here's how you can achieve a save of your game in one
-command (assuming a file has been opened for the purpose in *SAVEFILE):
-
-    Process('save', -file => \*SAVEFILE);
-
-The C<Process()> function returns the number of objects that were processed,
-which is the number of objects in the game as a whole.
-
-=head2 Modifying the default process sequence
-
-There are two ways to do this. The first is you can define your own
-C<process()> method in your subclass, overriding the built-in one, and
-thus call the other methods (and/or methods of your own devising) in any order
-you choose.
-
-Another way you can do it is by altering the internal list that Games::Object
-uses to determine what methods to call. This can be done with the
-C<SetProcessList()> function. For example, if you wished to remove processing
-of events from the initial phases and reverse the order of processing persistent
-modifiers and tend-to rates, you could make the following call:
-
-    SetProcessList('process_tend_to', 'process_pmod', 'process_queue');
-
-Note that these method calls can either be ones in Games::Object, or they can
-be ones that you define. You have complete control over exactly how your
-objects get processed.
-
-=head1 Priorities
-
-=head2 Object priority
-
-Each object has what is called a priority value. This value controls what
-order the object is processed in relation to the other objects when the
-C<Process()> function is called. When an object is first created new (as opposed
-to loading from a file, where it would get its priority there), it has a default
-priority of 0. This default can be modified via the C<priority()> method:
-
-    $obj->priority(5);
-
-The higher the priority number, the further to the head of the list the object
-is placed when C<Process()> is called. For example, say you created a series
-of objects with IDs "Player1", "RedDragon", "PurpleWorm", "HellHound", and
-then performed the following:
-
-    Find('Player1')->priority(5);
-    Find('RedDragon')->priority(3);
-    Find('PurpleWorm')->priority(3);
-    Find('HellHound')->priority(7);
-
-If you then called C<Process()>, first the 'HellHound' object would be
-processed, then the 'Player1' object, then the 'RedDragon' and 'PurpleWorm'
-objects (but in no guaranteed or reproducible order). Assuming that all other
-objects have a default priority, they would be processed at this point (again,
-in no particular order).
-
-Object priority can be changed at will, even from a user action being
-executed from within a C<Process()> call (it will not affect the order that
-the objects are processed this time around). The current priority of an object
-can be obtained by specifying C<priority()> with no arguments.
-
-Object priority can be a nice way of defining initiative in dungeon-type games.
-
-=head2 Attribute tend-to priority
-
-By default, tend-to rates on attributes are processed in no particular order
-in C<process_tend_to()>. This can be changed by specifying a I<-priority>
-value when creating the attribute in question. For example:
-
-    $obj->new_attr(-name => "endurance",
-		   -value => 100,
-		   -minimum => 0,
-		   -maximum => 100,
-		   -tend_to_rate => 1,
-		   -priority => 10);
-
-The priority can also be later changed if desired:
-
-    $obj->mod_attr(-name => "endurance",
-		   -priority => 5);
-
-The higher the priority, the sooner it is processed. If a I<-priority> is
-not specified, it defaults to 0. Attributes with the same priority do not
-process in any particular order that can be reliably reproduced between
-calls to C<process_tend_to()>.
-
-=head2 Attribute modifier priority
-
-By default, persistent attribute modifiers are executed in C<process_pmod()>
-in the order that they were created. This is can be altered when the modifier
-is first created by adding the I<-priority> parameter. For example:
-
-    $obj->mod_attr(-name => "health",
-		   -modify => 2,
-		   -incremental => 1,
-		   -persist_as => "ability:extra_healing",
-		   -priority => 10);
-
-Assuming that other modifiers are added with the default priority of 0, or
-with priorities less than 10, this guarantees that the modifier above
-representing healing will execute before all other modifiers (like, for
-example, that -15 health modifier from one angry red dragon ...).
-
-The only drawback is that a modifier priority is currently set in stone when
-it is first added. To change it, you would have to add the same modifier
-back again in its entirety. This will probably be changed in a future release.
-
-=head1 Queueing arbitrary actions
-
-As explained above, there are many places where actions are queued up in an
-object for later execution, such as when events are triggered, or persistent
-modifiers are added. The module uses the C<queue()> method to accomplish
-this, and you can use this method as well to queue up arbitrary actions. The
-caveat is the same with events, that the action must be a method name defined
-in your module.
-
-The C<queue()> method takes the action method name as the first parameter,
-followed by any arbitrary number of parameters to be passed to your method.
-For example, if you were to make the following call:
-
-    $obj->queue('kill_creature', who => 'Player1', how => "Dragonsbane");
-
-Then when C<process_queue()> is next called on this object, the Games::Object
-module will do the following:
-
-    $obj->kill_creature(who => 'Player1', how => "Dragonsbane");
-
-Your method would look something like this:
-
-    sub kill_creature
-    {
-	my $obj = shift;
-	my %args = @_;
-	my $obj_who = Games::Object::Find($args{who});
-	my $obj_how = Games::Object::Find($args{how});
-
-	$obj_who->mod_attr(-name => "experience",
-			   -modify => $obj->attr('kill_xp') +
-				      $obj_how->attr('use_for_kill_xp') );
-	...
-    }
-
-Of course, you don't have to use C<queue()> to execute a particular method
-in your class. Use C<queue()> only if you're specifically looking to defer
-the action until the next time C<process()> is called on the object, for the
-purposes of synchronization.
-
-=head1 Saving object data to a file
-
-This is one of the more powerful features of Games::Object. This essentially
-provides the functionality for a save-game action, freeing you from having
-to worry about how to represent the data and so on.
-
-Saving the data in an object is simple. Open a file for write, and then
-call the C<save()> method on the object:
-
-    $obj->save(-file => \*SAVEFILE);
-
-You can pass it anything that qualifies as a file, so long as it is opened
-for writing. Thus, for example, you could use an IO::File object. Essentially
-anything that can be used between <> in a I<print()> statement is valid.
-
-All the objects in the game can be easily saved at once by using the
-C<Process()> function:
-
-    Process('save', -file => \*SAVEFILE);
-
-Loading a game could be accomplished by simply reading a file and creating
-new objects from it until the file is empty. Here is a code snippet that would
-do this:
-
-    open(LOADFILE, "<./game.save") or die "Cannot open game save file\n";
-    while (!eof(LOADFILE)) {
-	my $obj = new Games::Object(-file => \*LOADFILE);
-    }
-    close(LOADFILE);
-
-Note something about the above code: We called the constructor for the
-Games::Object class, NOT your subclass. This is because on a C<save()>, the
-subclass is saved to the file, and when the object is re-created from the file,
-the Games::Object constructor is smart enough to re-bless it into your subclass.
-This means you can define more than one subclass from Games::Object and
-freely mix them in your game.
-
-=head1 EXAMPLES
-
-Please refer to specific sections above for examples of use.
-
-Example data was chosen to approximate what one might program in a game, but
-is not meant to show how it B<should> be done with regards to attribute names
-or programming style. Most names were chosen out of thin air, but with at
-least the suggestion of how it might look.
-
-=head1 WARNINGS AND CAVEATS
-
-This is currently an alpha version of this module. Interfaces may and
-probably will change in the immediate future as I improve on the design.
-The interface to event handling WILL change, I can guarantee that much.
-
-If you look at the code, you will find some extra functionality that is not
-explained in the documentation. This functionality is NOT to be considered
-stable. There are no tests for them in the module's test suite. I left it out
-of the doc for the alpha release until I have had time to refine it. If you
-find it and want to use it, do so at your own risk. I hope to have this
-functionality fully working and documented in the beta.
-
-=head1 BUGS
-
-Cancelling a persistent modifier that attempted to modify a value past its
-min or max and only had part of the modifier applied will remove the entire
-modifier. For example, if a persistent modifier of 10 is applied to an attribute
-at 95, and the attribute is set to option use_up with a max of 100, the
-attribute is raised only to 100. Yet when the modifier is cancelled, the
-attribute is lowered to 90. This is probably not what you want.
-
-There is a design flaw in the C<process()> logic. See L<"Timing Issues"> for
-more details.
-
-There are probably lots of other bugs, since this IS an alpha release, but
-these are the only one known at this time.
-
-=head1 TO DO
-
-I will be investigating replacing the bulk of the load() and save() code with
-hooks into the Storable module. I had not known about this module until after
-I had coded much of Games::Object. Look for this possibly in the beta version.
-
-There needs to be an option to mod_attr() that forces a persistent mod to
-take effect immediately.
-
-Cloning an object would be useful functionality to have.
-
-Need to expand event functionality. I would like to model it like Tk's
-bind() method. For example, I'd like to be able to register an event
-handler for an attrValueModified for a specifically-named attribute, while
-at the same time still retaining the functionality of defining an event handler
-for the much broader case.
-
-Processing order for objects in C<Process()> needs to be more consistent with
-attribute persistent mods. The former has no defined order when priorities
-are the same, while the latter specifies the order in which the mods were
-added. What might be nice would be a way to choose a truly random order
-for processing.
-
-There needs to be a way to "encode" the game save data. Right now its in
-clear ASCII, which would make it easy to cheat. Using Storable might mitigate
-this somewhat.
-
-A form of "undo" functionality would be WAY cool. I have something like this
-in another (but non-CPAN) module. I just need to port it over.
-
-Adding a filter to Process() (i.e. have it process only those objects for
-which some arbitrary expression evaluates to true) would be useful.
-
-=cut

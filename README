@@ -1,4 +1,4 @@
-Games/Object version 0.02
+Games/Object version 0.03
 =========================
 
 INTRODUCTION
@@ -52,6 +52,13 @@ The functionality of this module can be divided into the following sections:
     Object data can be saved to an arbitrary file and then read back in later
     to produce an exact copy of the object. This essentially provides the bulk
     of save/load game functionality.
+
+  Events
+
+    The user can define arbitrary code to execute when modifications are
+    made to object. Events are hierarchical, in that you can have events
+    that trigger only on a specific modification, en entire class of
+    modifications, or all modifications.
 
 
 CHANGES FROM LAST VERSION

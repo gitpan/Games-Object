@@ -1,6 +1,35 @@
 Revision history for Perl extension Games::Object.
 
-0.02  ???
+0.03  Sat Apr  6 06:42:00 MST 2002
+	Completely reworked the event handling mechanism to allow events
+	to be targeted for specific objects.
+
+	Events also now trigger as soon as they happen. Queueing them didn't
+	really make any sense once I really looked at it.
+
+	The "round" option for -on_fractional now works properly.
+
+	Added events objectLoaded and objectSaved to allow for class-specific
+	data manipulation.
+
+	Fixed bug where the persistent mod table was not being initialized
+	properly and probably caused perl to complain under -w, though the
+	code still worked.
+
+	Altered the default process_list by removing the second call to
+	process_queue(), since the changes to the event structure obviates
+	the need for this.
+
+	Expanded the priority.t test suite to cover tend-to and persistent mods.
+
+	Added event.t test suite.
+
+	Corrected some erroneous examples in the docs.
+
+	Put the perldoc stuff into a separate file, as it was growing
+	as large as the code itself.
+
+0.02  Sun Feb 24 09:43:46 MST 2002
 	The docs stated that a reference to an object subclassed to
 	Games::Object assigned to an attribute of 'any' would save/load
 	the reference correctly. Now it really does.
